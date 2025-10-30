@@ -1,7 +1,7 @@
 use clap::Parser;
 use runic::{
     config::{API, Database},
-    scaffold::{ScaffoldSettings, run},
+    scaffold::{ScaffoldSettings, scaffold},
 };
 use simple_logger::SimpleLogger;
 use std::process;
@@ -57,7 +57,7 @@ fn main() {
         start_block: args.start_block,
     };
 
-    if let Err(err) = run(settings) {
+    if let Err(err) = scaffold(settings) {
         eprintln!("Scaffolding failed: {err}");
         process::exit(1);
     }

@@ -1,9 +1,16 @@
-use crate::config::{API, Database, RunicConfig};
+use crate::{
+    config::{API, Database, RunicConfig},
+    errors::ScaffoldError,
+    generate::generate_abi_bindings,
+    templates::{cargo::write_cargo_toml, indexer::write_runic_indexer},
+};
+use dialoguer::Input;
+use ethers_core::{types::Address, utils::to_checksum};
 use log::info;
 use std::{
-    fmt, fs,
-    io::{self, Write},
+    fs,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 pub struct ScaffoldSettings {
@@ -13,45 +20,7 @@ pub struct ScaffoldSettings {
     pub start_block: i64,
 }
 
-#[derive(Debug)]
-pub enum ScaffoldError {
-    Io(io::Error),
-    Serialization(toml::ser::Error),
-}
-
-impl fmt::Display for ScaffoldError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScaffoldError::Io(err) => write!(f, "io error: {err}"),
-            ScaffoldError::Serialization(err) => {
-                write!(f, "failed to serialize configuration: {err}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ScaffoldError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ScaffoldError::Io(err) => Some(err),
-            ScaffoldError::Serialization(err) => Some(err),
-        }
-    }
-}
-
-impl From<io::Error> for ScaffoldError {
-    fn from(err: io::Error) -> Self {
-        ScaffoldError::Io(err)
-    }
-}
-
-impl From<toml::ser::Error> for ScaffoldError {
-    fn from(err: toml::ser::Error) -> Self {
-        ScaffoldError::Serialization(err)
-    }
-}
-
-pub fn run(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
+pub fn scaffold(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
     println!();
     println!("Project configuration");
     println!("---------------------");
@@ -64,7 +33,10 @@ pub fn run(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
         settings.abi, folder_name
     );
 
+    fs::create_dir_all(&project_root)?;
+
     let config_path = project_root.join("Config.toml");
+
     let config = RunicConfig::new(
         contract_address.clone(),
         settings.start_block,
@@ -76,11 +48,12 @@ pub fn run(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
 
     create_project_layout(&project_root)?;
 
-    let crate_name = crate_name_from_folder(&folder_name);
+    let normalized_name = normalized_folder_name(&folder_name);
+    let project_name = format!("runic-indexer-{normalized_name}");
 
-    write_cargo_toml(&project_root, &crate_name)?;
+    write_cargo_toml(&project_root, &project_name)?;
     write_runic_indexer(&project_root)?;
-    write_library_files(&project_root)?;
+    generate_abi_bindings(&project_root, &settings.abi)?;
 
     info!(
         "Project created at `{}`. You can now build and run your indexer.",
@@ -92,19 +65,18 @@ pub fn run(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
 
 fn prompt_project_folder() -> Result<(String, PathBuf), ScaffoldError> {
     loop {
-        print!("Project folder name: ");
-        io::stdout().flush()?;
+        let folder_name: String = Input::new()
+            .with_prompt("Project folder name")
+            .validate_with(|input: &String| -> Result<(), &str> {
+                if input.trim().is_empty() {
+                    Err("Folder name cannot be empty.")
+                } else {
+                    Ok(())
+                }
+            })
+            .interact_text()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let trimmed = input.trim();
-
-        if trimmed.is_empty() {
-            println!("Folder name cannot be empty. Please try again.");
-            continue;
-        }
-
-        let folder_name = trimmed.to_owned();
+        let folder_name = folder_name.trim().to_owned();
         let project_root = PathBuf::from(&folder_name);
 
         if project_root.exists() {
@@ -114,8 +86,6 @@ fn prompt_project_folder() -> Result<(String, PathBuf), ScaffoldError> {
             continue;
         }
 
-        fs::create_dir_all(&project_root)?;
-
         return Ok((folder_name, project_root));
     }
 }
@@ -124,19 +94,37 @@ fn prompt_contract_address() -> Result<String, ScaffoldError> {
     const DEFAULT_CONTRACT: &str =
         "0x0000000000000000000000000000000000000000";
 
-    print!(
-        "Contract address (press Enter for default 0x000…0000, can edit later): "
-    );
-    io::stdout().flush()?;
+    let prompt = format!("Contract address:");
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let input: String = Input::new()
+        .with_prompt(prompt)
+        .allow_empty(true)
+        .default(DEFAULT_CONTRACT.to_owned())
+        .show_default(true)
+        .validate_with(|value: &String| -> Result<(), String> {
+            let trimmed = value.trim();
+
+            if trimmed.is_empty() || trimmed == DEFAULT_CONTRACT {
+                return Ok(());
+            }
+
+            Address::from_str(trimmed).map(|_| ()).map_err(|_| {
+                "Please enter a valid Ethereum address.".to_owned()
+            })
+        })
+        .interact_text()?;
+
     let trimmed = input.trim();
 
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed == DEFAULT_CONTRACT {
+        println!(
+            "Using default contract address {DEFAULT_CONTRACT}. You can update this later."
+        );
         Ok(DEFAULT_CONTRACT.to_owned())
     } else {
-        Ok(trimmed.to_owned())
+        let address = Address::from_str(trimmed)
+            .expect("address validated by dialoguer");
+        Ok(to_checksum(&address, None))
     }
 }
 
@@ -154,16 +142,15 @@ fn create_project_layout(
 ) -> Result<(), ScaffoldError> {
     let bin_dir = project_root.join("bin");
     let src_dir = project_root.join("src");
-    let abi_dir = src_dir.join("abi");
 
-    for dir in [&bin_dir, &src_dir, &abi_dir] {
+    for dir in [&bin_dir, &src_dir] {
         fs::create_dir_all(dir)?;
     }
 
     Ok(())
 }
 
-fn crate_name_from_folder(folder_name: &str) -> String {
+fn normalized_folder_name(folder_name: &str) -> String {
     let sanitized: String = folder_name
         .chars()
         .map(|c| {
@@ -181,99 +168,9 @@ fn crate_name_from_folder(folder_name: &str) -> String {
 
     let trimmed = sanitized.trim_matches('-');
 
-    let mut crate_name = if trimmed.is_empty() {
-        "runic-indexer".to_owned()
+    if trimmed.is_empty() {
+        "project".to_owned()
     } else {
         trimmed.to_owned()
-    };
-
-    if crate_name
-        .chars()
-        .next()
-        .map(|c| c.is_ascii_digit())
-        .unwrap_or(false)
-    {
-        crate_name = format!("runic-{crate_name}");
     }
-
-    crate_name
-}
-
-fn write_cargo_toml(
-    project_root: &Path,
-    crate_name: &str,
-) -> Result<(), ScaffoldError> {
-    let cargo_toml_path = project_root.join("Cargo.toml");
-    let cargo_toml_contents = format!(
-        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = {{ version = \"1.0\", features = [\"derive\"] }}\ntoml = \"0.8\"\n"
-    );
-
-    fs::write(cargo_toml_path, cargo_toml_contents)?;
-    Ok(())
-}
-
-fn write_runic_indexer(project_root: &Path) -> Result<(), ScaffoldError> {
-    let bin_dir = project_root.join("bin");
-    let runic_indexer_path = bin_dir.join("runic-indexer.rs");
-    let runic_indexer_contents = r#"use std::fs;
-
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct RunicConfig {
-    contract: ContractConfig,
-    network: NetworkConfig,
-    engines: EngineConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContractConfig {
-    address: String,
-    start_block: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetworkConfig {
-    rpc_endpoint: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct EngineConfig {
-    api: String,
-    db: String,
-}
-
-fn main() {
-    let config = load_config("Config.toml");
-    println!(
-        "Indexer configured for contract {} starting at block {}",
-        config.contract.address, config.contract.start_block
-    );
-}
-
-fn load_config(path: &str) -> RunicConfig {
-    let contents =
-        fs::read_to_string(path).unwrap_or_else(|err| panic!("Failed to read {}: {err}", path));
-    toml::from_str(&contents)
-        .unwrap_or_else(|err| panic!("Failed to parse {}: {err}", path))
-}
-"#;
-
-    fs::write(runic_indexer_path, runic_indexer_contents)?;
-    Ok(())
-}
-
-fn write_library_files(project_root: &Path) -> Result<(), ScaffoldError> {
-    let src_dir = project_root.join("src");
-    let lib_rs_path = src_dir.join("lib.rs");
-    let abi_dir = src_dir.join("abi");
-    let abi_mod_path = abi_dir.join("mod.rs");
-
-    fs::write(lib_rs_path, "pub mod abi;\n")?;
-    fs::write(
-        abi_mod_path,
-        "// ABI bindings can be added to this module.\n",
-    )?;
-
-    Ok(())
 }
