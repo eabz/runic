@@ -2,7 +2,11 @@ use crate::{
     config::{API, Database, RunicConfig},
     errors::ScaffoldError,
     generate::generate_abi_bindings,
-    templates::{cargo::write_cargo_toml, indexer::write_runic_indexer},
+    templates::{
+        cargo::write_cargo_toml, config::write_runic_config,
+        indexer::write_runic_indexer, lib::write_runic_lib,
+        rpc::write_runic_rpc,
+    },
 };
 use dialoguer::Input;
 use ethers_core::{types::Address, utils::to_checksum};
@@ -48,11 +52,12 @@ pub fn scaffold(settings: ScaffoldSettings) -> Result<(), ScaffoldError> {
 
     create_project_layout(&project_root)?;
 
-    let normalized_name = normalized_folder_name(&folder_name);
-    let project_name = format!("runic-indexer-{normalized_name}");
-
-    write_cargo_toml(&project_root, &project_name)?;
+    write_cargo_toml(&project_root)?;
     write_runic_indexer(&project_root)?;
+    write_runic_config(&project_root)?;
+    write_runic_lib(&project_root)?;
+    write_runic_rpc(&project_root)?;
+
     generate_abi_bindings(&project_root, &settings.abi)?;
 
     info!(
@@ -117,9 +122,6 @@ fn prompt_contract_address() -> Result<String, ScaffoldError> {
     let trimmed = input.trim();
 
     if trimmed.is_empty() || trimmed == DEFAULT_CONTRACT {
-        println!(
-            "Using default contract address {DEFAULT_CONTRACT}. You can update this later."
-        );
         Ok(DEFAULT_CONTRACT.to_owned())
     } else {
         let address = Address::from_str(trimmed)
@@ -148,29 +150,4 @@ fn create_project_layout(
     }
 
     Ok(())
-}
-
-fn normalized_folder_name(folder_name: &str) -> String {
-    let sanitized: String = folder_name
-        .chars()
-        .map(|c| {
-            let lower = c.to_ascii_lowercase();
-            if lower.is_ascii_alphanumeric()
-                || lower == '-'
-                || lower == '_'
-            {
-                lower
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    let trimmed = sanitized.trim_matches('-');
-
-    if trimmed.is_empty() {
-        "project".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
 }
