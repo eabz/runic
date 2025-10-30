@@ -1,6 +1,8 @@
 use clap::ValueEnum;
 use serde::Serialize;
-use std::fmt;
+use std::{fmt, fs, path::Path};
+
+use crate::errors::RunicError;
 
 #[derive(
     Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, ValueEnum,
@@ -89,4 +91,13 @@ pub struct EngineConfig {
 pub struct ChildContractConfig {
     pub event_signature: String,
     pub abi_path: String,
+}
+
+pub fn write_config(
+    config_path: &Path,
+    config: &RunicConfig,
+) -> Result<(), RunicError> {
+    let config_contents = toml::to_string_pretty(config)?;
+    fs::write(config_path, config_contents)?;
+    Ok(())
 }

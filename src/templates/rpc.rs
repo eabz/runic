@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use tera::Context;
 
-use crate::{errors::ScaffoldError, templates::render_template};
+use crate::{errors::RunicError, templates::render_template};
 
 pub const RUNIC_RPC_TEMPLATE: &str = r#"use std::sync::Arc;
 
@@ -45,7 +45,7 @@ impl Rpc {
 
 "#;
 
-pub fn write_runic_rpc(project_root: &Path) -> Result<(), ScaffoldError> {
+pub fn write_runic_rpc(project_root: &Path) -> Result<(), RunicError> {
     let bin_dir = project_root.join("src");
     let runic_rpc_path = bin_dir.join("rpc.rs");
     let context = Context::new();

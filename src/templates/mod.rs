@@ -1,6 +1,6 @@
 use tera::{Context, Tera};
 
-use crate::errors::ScaffoldError;
+use crate::errors::RunicError;
 
 pub mod cargo;
 pub mod config;
@@ -11,6 +11,6 @@ pub mod rpc;
 fn render_template(
     template: &str,
     context: &Context,
-) -> Result<String, ScaffoldError> {
-    Tera::one_off(template, context, false).map_err(ScaffoldError::from)
+) -> Result<String, RunicError> {
+    Tera::one_off(template, context, false).map_err(RunicError::from)
 }

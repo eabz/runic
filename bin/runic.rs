@@ -2,16 +2,21 @@ use alloy::{json_abi::JsonAbi, primitives::Address};
 use clap::Parser;
 use dialoguer::{Confirm, Input, Select};
 use runic::{
-    config::{API, ChildContractConfig, Database, RunicConfig},
-    errors::ScaffoldError,
+    config::{
+        API, ChildContractConfig, Database, RunicConfig, write_config,
+    },
+    errors::RunicError,
     templates::{
         cargo::write_cargo_toml, config::write_runic_config,
         indexer::write_runic_indexer, lib::write_runic_lib,
         rpc::write_runic_rpc,
     },
+    utils::{
+        SimplePathCompletion, load_json_abi, print_banner, print_section,
+    },
 };
 use std::{
-    env, fs, io,
+    fs,
     path::{Path, PathBuf},
     process,
     str::FromStr,
@@ -27,18 +32,22 @@ use std::{
 )]
 struct RunicArgs;
 
-pub struct RunicSettings {
+pub struct RunicDefaults {
     pub default_api: API,
     pub default_db: Database,
     pub default_start_block: i64,
+    pub default_contract: String,
 }
 
-impl Default for RunicSettings {
+impl Default for RunicDefaults {
     fn default() -> Self {
         Self {
             default_api: API::Graphql,
             default_db: Database::Redb,
             default_start_block: 0,
+            default_contract: String::from(
+                "0x0000000000000000000000000000000000000000",
+            ),
         }
     }
 }
@@ -46,20 +55,21 @@ impl Default for RunicSettings {
 fn main() {
     RunicArgs::parse();
 
-    let settings = RunicSettings::default();
+    let defaults = RunicDefaults::default();
 
-    if let Err(err) = scaffold(settings) {
+    if let Err(err) = scaffold(defaults) {
         eprintln!("Scaffolding failed: {err}");
         process::exit(1);
     }
 }
 
-pub fn scaffold(settings: RunicSettings) -> Result<(), ScaffoldError> {
+pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     print_banner("Runic Indexer Scaffolder");
 
     let (folder_name, project_root) = prompt_project_folder()?;
 
-    let contract_address = prompt_contract_address()?;
+    let contract_address =
+        prompt_contract_address(defaults.default_contract)?;
 
     let abi_path =
         prompt_existing_json_path("Path to the contract ABI JSON")?;
@@ -67,11 +77,11 @@ pub fn scaffold(settings: RunicSettings) -> Result<(), ScaffoldError> {
 
     println!("[ok] loaded ABI from {}", abi_path.display());
 
-    let start_block = prompt_start_block(settings.default_start_block)?;
+    let start_block = prompt_start_block(defaults.default_start_block)?;
 
-    let selected_db = prompt_database(settings.default_db)?;
+    let selected_db = prompt_database(defaults.default_db)?;
 
-    let selected_api = prompt_api(settings.default_api)?;
+    let selected_api = prompt_api(defaults.default_api)?;
 
     let (child_contract, child_abi_source) =
         prompt_child_contract_tracking(&parsed_abi)?;
@@ -104,7 +114,6 @@ pub fn scaffold(settings: RunicSettings) -> Result<(), ScaffoldError> {
 
     let primary_abi_target = abi_dir.join("abi.json");
     fs::copy(&abi_path, &primary_abi_target)?;
-    println!("[ok] Copied ABI to {}", primary_abi_target.display());
 
     let child_target = abi_dir.join("child-abi.json");
     if let Some(child_source) = &child_abi_source {
@@ -121,11 +130,8 @@ pub fn scaffold(settings: RunicSettings) -> Result<(), ScaffoldError> {
     println!("- API surface: {}", selected_api);
     println!("- ABI source: {}", abi_path.display());
 
-    match child_contract_for_summary {
-        Some(child) => {
-            println!("- Child event: {}", child.event_signature);
-        }
-        None => println!("- Child contracts: not tracked"),
+    if let Some(child_contract) = &child_contract_for_summary {
+        println!("- Child event: {}", child_contract.event_signature);
     }
 
     println!();
@@ -137,7 +143,19 @@ pub fn scaffold(settings: RunicSettings) -> Result<(), ScaffoldError> {
     Ok(())
 }
 
-fn prompt_project_folder() -> Result<(String, PathBuf), ScaffoldError> {
+fn create_project_layout(project_root: &Path) -> Result<(), RunicError> {
+    let bin_dir = project_root.join("bin");
+    let src_dir = project_root.join("src");
+    let abi_dir = src_dir.join("abi");
+
+    for dir in [&bin_dir, &src_dir, &abi_dir] {
+        fs::create_dir_all(dir)?;
+    }
+
+    Ok(())
+}
+
+fn prompt_project_folder() -> Result<(String, PathBuf), RunicError> {
     loop {
         let folder_name: String = Input::new()
             .with_prompt("Project folder name")
@@ -164,21 +182,18 @@ fn prompt_project_folder() -> Result<(String, PathBuf), ScaffoldError> {
     }
 }
 
-fn prompt_contract_address() -> Result<String, ScaffoldError> {
-    const DEFAULT_CONTRACT: &str =
-        "0x0000000000000000000000000000000000000000";
-
+fn prompt_contract_address(default: String) -> Result<String, RunicError> {
     let prompt = format!("Contract address:");
 
     let input: String = Input::new()
         .with_prompt(prompt)
         .allow_empty(true)
-        .default(DEFAULT_CONTRACT.to_owned())
+        .default(default.to_owned())
         .show_default(true)
         .validate_with(|value: &String| -> Result<(), String> {
             let trimmed = value.trim();
 
-            if trimmed.is_empty() || trimmed == DEFAULT_CONTRACT {
+            if trimmed.is_empty() || trimmed == default {
                 return Ok(());
             }
 
@@ -190,8 +205,8 @@ fn prompt_contract_address() -> Result<String, ScaffoldError> {
 
     let trimmed = input.trim();
 
-    if trimmed.is_empty() || trimmed == DEFAULT_CONTRACT {
-        Ok(DEFAULT_CONTRACT.to_owned())
+    if trimmed.is_empty() || trimmed == default {
+        Ok(default.to_owned())
     } else {
         let address = Address::from_str(trimmed)
             .expect("address validated by dialoguer");
@@ -199,28 +214,27 @@ fn prompt_contract_address() -> Result<String, ScaffoldError> {
     }
 }
 
-fn prompt_existing_json_path(
-    prompt: &str,
-) -> Result<PathBuf, ScaffoldError> {
+fn prompt_existing_json_path(prompt: &str) -> Result<PathBuf, RunicError> {
     let input: String = Input::new()
         .with_prompt(prompt)
+        .completion_with(&SimplePathCompletion::default())
         .validate_with(|value: &String| -> Result<(), String> {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 return Err("Path cannot be empty.".to_owned());
             }
 
-            let resolved = resolve_path(trimmed);
-            if !resolved.exists() {
+            let path = PathBuf::from(trimmed);
+            if !path.exists() {
                 return Err(format!("File `{trimmed}` does not exist."));
             }
-            if resolved.is_dir() {
+            if path.is_dir() {
                 return Err(
                     "Expected a file path, but found a directory."
                         .to_owned(),
                 );
             }
-            let is_json = resolved
+            let is_json = path
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext.eq_ignore_ascii_case("json"))
@@ -232,10 +246,10 @@ fn prompt_existing_json_path(
         })
         .interact_text()?;
 
-    Ok(resolve_path(input.trim()))
+    Ok(PathBuf::from(input.trim()))
 }
 
-fn prompt_start_block(default: i64) -> Result<i64, ScaffoldError> {
+fn prompt_start_block(default: i64) -> Result<i64, RunicError> {
     let block: i64 = Input::new()
         .with_prompt("Starting block")
         .default(default)
@@ -252,7 +266,7 @@ fn prompt_start_block(default: i64) -> Result<i64, ScaffoldError> {
     Ok(block)
 }
 
-fn prompt_database(default: Database) -> Result<Database, ScaffoldError> {
+fn prompt_database(default: Database) -> Result<Database, RunicError> {
     let options = [Database::Redb];
     let labels: Vec<String> =
         options.iter().map(|db| db.to_string()).collect();
@@ -267,7 +281,7 @@ fn prompt_database(default: Database) -> Result<Database, ScaffoldError> {
     Ok(options[selected])
 }
 
-fn prompt_api(default: API) -> Result<API, ScaffoldError> {
+fn prompt_api(default: API) -> Result<API, RunicError> {
     let options = [API::Graphql];
     let labels: Vec<String> =
         options.iter().map(|api| api.to_string()).collect();
@@ -284,8 +298,7 @@ fn prompt_api(default: API) -> Result<API, ScaffoldError> {
 
 fn prompt_child_contract_tracking(
     abi: &JsonAbi,
-) -> Result<(Option<ChildContractConfig>, Option<PathBuf>), ScaffoldError>
-{
+) -> Result<(Option<ChildContractConfig>, Option<PathBuf>), RunicError> {
     let track_children = Confirm::new()
         .with_prompt(
             "Does this contract create child contracts that need tracking?",
@@ -321,7 +334,7 @@ fn prompt_child_contract_tracking(
     event_options.dedup();
 
     if event_options.is_empty() {
-        return Err(ScaffoldError::Abi(
+        return Err(RunicError::Abi(
             "The provided ABI does not contain any events to monitor for child contracts."
                 .to_owned(),
         ));
@@ -340,6 +353,7 @@ fn prompt_child_contract_tracking(
 
     let child_source =
         prompt_existing_json_path("Path to the child contract ABI JSON")?;
+
     let _ = load_json_abi(&child_source)?;
 
     let child_config = ChildContractConfig {
@@ -348,97 +362,4 @@ fn prompt_child_contract_tracking(
     };
 
     Ok((Some(child_config), Some(child_source)))
-}
-
-fn load_json_abi(path: &Path) -> Result<JsonAbi, ScaffoldError> {
-    if !path.exists() {
-        return Err(ScaffoldError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("ABI file `{}` not found", path.display()),
-        )));
-    }
-
-    let contents = fs::read_to_string(path)?;
-
-    serde_json::from_str(&contents).map_err(|err| {
-        ScaffoldError::Abi(format!(
-            "Failed to parse ABI `{}`: {err}",
-            path.display()
-        ))
-    })
-}
-
-fn write_config(
-    config_path: &Path,
-    config: &RunicConfig,
-) -> Result<(), ScaffoldError> {
-    let config_contents = toml::to_string_pretty(config)?;
-    fs::write(config_path, config_contents)?;
-    Ok(())
-}
-
-fn create_project_layout(
-    project_root: &Path,
-) -> Result<(), ScaffoldError> {
-    let bin_dir = project_root.join("bin");
-    let src_dir = project_root.join("src");
-    let abi_dir = src_dir.join("abi");
-
-    for dir in [&bin_dir, &src_dir, &abi_dir] {
-        fs::create_dir_all(dir)?;
-    }
-
-    Ok(())
-}
-
-fn print_banner(title: &str) {
-    println!();
-    println!("{title}");
-    println!("{}", "=".repeat(title.len()));
-}
-
-fn print_section(title: &str) {
-    println!();
-    println!("{title}");
-    println!("{}", "-".repeat(title.len()));
-}
-
-fn resolve_path(input: &str) -> PathBuf {
-    if input == "~" {
-        if let Some(home) = user_home_dir() {
-            return home;
-        }
-    } else if input.starts_with("~/") || input.starts_with("~\\") {
-        if let Some(mut home) = user_home_dir() {
-            home.push(&input[2..]);
-            return home;
-        }
-    }
-
-    PathBuf::from(input)
-}
-
-fn user_home_dir() -> Option<PathBuf> {
-    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        return Some(home);
-    }
-
-    #[cfg(windows)]
-    {
-        if let Some(profile) =
-            env::var_os("USERPROFILE").map(PathBuf::from)
-        {
-            return Some(profile);
-        }
-
-        let drive = env::var_os("HOMEDRIVE");
-        let path = env::var_os("HOMEPATH");
-        if let (Some(drive), Some(path)) = (drive, path) {
-            let mut home = PathBuf::from(drive);
-            home.push(path);
-            return Some(home);
-        }
-    }
-
-    None
 }

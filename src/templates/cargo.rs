@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use tera::Context;
 
-use crate::{errors::ScaffoldError, templates::render_template};
+use crate::{errors::RunicError, templates::render_template};
 
 pub const CARGO_TOML_TEMPLATE: &str = r#"[package]
 name = "runic-indexer"
@@ -24,7 +24,7 @@ path = "bin/runic-indexer.rs"
 name = "runic-indexer"
 "#;
 
-pub fn write_cargo_toml(project_root: &Path) -> Result<(), ScaffoldError> {
+pub fn write_cargo_toml(project_root: &Path) -> Result<(), RunicError> {
     let cargo_toml_path = project_root.join("Cargo.toml");
     let context = Context::new();
     let cargo_toml_contents =
