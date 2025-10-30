@@ -17,6 +17,12 @@ pub struct RunicConfig {
 pub struct ContractConfig {
     pub address: String,
     pub start_block: i64,
+    pub child_contract: Option<ChildContractConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChildContractConfig {
+    pub event_signature: String,
 }
 
 #[derive(Debug, Deserialize)]

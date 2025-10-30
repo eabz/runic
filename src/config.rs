@@ -49,9 +49,14 @@ impl RunicConfig {
         start_block: i64,
         api: API,
         db: Database,
+        child_contract: Option<ChildContractConfig>,
     ) -> Self {
         Self {
-            contract: ContractConfig { address, start_block },
+            contract: ContractConfig {
+                address,
+                start_block,
+                child_contract,
+            },
             network: NetworkConfig { rpc_endpoint: String::new() },
             engines: EngineConfig {
                 api: api.to_string(),
@@ -65,6 +70,8 @@ impl RunicConfig {
 pub struct ContractConfig {
     pub address: String,
     pub start_block: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_contract: Option<ChildContractConfig>,
 }
 
 #[derive(Serialize)]
@@ -76,4 +83,10 @@ pub struct NetworkConfig {
 pub struct EngineConfig {
     pub api: String,
     pub db: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ChildContractConfig {
+    pub event_signature: String,
+    pub abi_path: String,
 }

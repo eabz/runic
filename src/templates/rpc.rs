@@ -4,37 +4,50 @@ use tera::Context;
 
 use crate::{errors::ScaffoldError, templates::render_template};
 
-pub const RUNIC_RPC_TEMPLATE: &str = r#"use serde::Deserialize;
+pub const RUNIC_RPC_TEMPLATE: &str = r#"use std::sync::Arc;
 
-#[derive(Debug, Deserialize)]
-pub struct RunicConfig {
-    pub contract: ContractConfig,
-    pub network: NetworkConfig,
-    pub engines: EngineConfig,
+use alloy::{
+    json_abi::JsonAbi,
+    providers::{DynProvider, ProviderBuilder},
+};
+use log::info;
+
+use crate::config::RunicConfig;
+
+pub struct Rpc {
+    pub config: Arc<RunicConfig>,
+    pub abi: Arc<JsonAbi>,
+    pub client: Arc<DynProvider>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ContractConfig {
-    pub address: String,
-    pub start_block: i64,
-}
+impl Rpc {
+    /// Constructs a new RPC client using the provided configuration.
+    pub async fn new(config: Arc<RunicConfig>, abi: Arc<JsonAbi>) -> Self {
+        info!("Starting rpc service");
 
-#[derive(Debug, Deserialize)]
-pub struct NetworkConfig {
-    pub rpc_endpoint: String,
-}
+        let client = ProviderBuilder::new()
+            .connect(config.network.rpc_endpoint.as_str())
+            .await
+            .unwrap();
 
-#[derive(Debug, Deserialize)]
-pub struct EngineConfig {
-    pub api: String,
-    pub db: String,
+        let client = DynProvider::new(client.clone());
+
+        Self { config, client: Arc::new(client), abi }
+    }
+
+    pub async fn listen_events(&self) {
+        println!("{:?}", self.abi);
+        let events = self.abi.events.clone();
+
+        info!("Listening to {} events of the contract", events.len());
+    }
 }
 
 "#;
 
 pub fn write_runic_rpc(project_root: &Path) -> Result<(), ScaffoldError> {
     let bin_dir = project_root.join("src");
-    let runic_rpc_path = bin_dir.join("config.rs");
+    let runic_rpc_path = bin_dir.join("rpc.rs");
     let context = Context::new();
     let runic_rpc_contents =
         render_template(RUNIC_RPC_TEMPLATE, &context)?;
