@@ -90,7 +90,7 @@ impl Completion for SimplePathCompletion {
             name
         } else if trimmed.ends_with(sep) || trimmed.ends_with('/') {
             format!("{trimmed}{name}")
-        } else if let Some(pos) = trimmed.rfind(|c| c == sep || c == '/') {
+        } else if let Some(pos) = trimmed.rfind([sep, '/']) {
             let (head, _) = trimmed.split_at(pos + 1);
             format!("{head}{name}")
         } else {

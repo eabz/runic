@@ -182,7 +182,7 @@ fn prompt_project_folder() -> Result<(String, PathBuf), RunicError> {
 }
 
 fn prompt_contract_address(default: String) -> Result<String, RunicError> {
-    let prompt = format!("Contract address:");
+    let prompt = "Contract address:".to_string();
 
     let input: String = Input::new()
         .with_prompt(prompt)
@@ -216,7 +216,7 @@ fn prompt_contract_address(default: String) -> Result<String, RunicError> {
 fn prompt_existing_json_path(prompt: &str) -> Result<PathBuf, RunicError> {
     let input: String = Input::new()
         .with_prompt(prompt)
-        .completion_with(&SimplePathCompletion::default())
+        .completion_with(&SimplePathCompletion)
         .validate_with(|value: &String| -> Result<(), String> {
             let trimmed = value.trim();
             if trimmed.is_empty() {
