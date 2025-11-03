@@ -1,8 +1,8 @@
 use crate::errors::RunicError;
 use alloy::json_abi::{Event, EventParam, JsonAbi};
 use async_graphql_parser::parse_schema;
-use capnpc::CompilerCommand;
 use ethers_core::abi::{ParamType, param_type::Reader};
+use protoc_bin_vendored::protoc_bin_path;
 use std::{
     collections::{BTreeSet, HashMap},
     fmt, fs, io,
@@ -40,7 +40,6 @@ impl<'a> ArtifactGenerator<'a> {
         let mut graphql_scalars = BTreeSet::new();
         let mut grpc_messages = Vec::new();
         let mut grpc_envelope_variants = Vec::new();
-        let mut capnp_structs = Vec::new();
         let mut rust_structs = Vec::new();
         let mut rust_uses_primitives = BTreeSet::new();
         let mut needs_json_value = false;
@@ -55,7 +54,6 @@ impl<'a> ArtifactGenerator<'a> {
             let graphql_type_name = struct_name.clone();
             let graphql_field_name = event.graphql_field_name();
             let grpc_message_name = struct_name.clone();
-            let capnp_struct_name = struct_name.clone();
 
             let mut pg_columns = vec![
                 "id BIGSERIAL PRIMARY KEY".to_string(),
@@ -81,12 +79,6 @@ impl<'a> ArtifactGenerator<'a> {
                 "    uint64 block_number = 1;".to_string(),
                 "    string transaction_hash = 2;".to_string(),
                 "    uint32 log_index = 3;".to_string(),
-            ];
-
-            let mut capnp_fields = vec![
-                "    blockNumber @0 :UInt64;".to_string(),
-                "    transactionHash @1 :Text;".to_string(),
-                "    logIndex @2 :UInt32;".to_string(),
             ];
 
             let mut rust_fields = vec![
@@ -119,7 +111,6 @@ impl<'a> ArtifactGenerator<'a> {
             ];
 
             let mut grpc_field_index = 4;
-            let mut capnp_field_index = 3;
 
             for param in &event.params {
                 let mapping = map_param_type(&param.param_type);
@@ -163,19 +154,6 @@ impl<'a> ArtifactGenerator<'a> {
                 ));
                 grpc_field_index += 1;
 
-                let capnp_type = if mapping.capnp_is_list {
-                    format!("List({})", mapping.capnp_type)
-                } else {
-                    mapping.capnp_type.clone()
-                };
-                capnp_fields.push(format!(
-                    "    {} @{} :{};",
-                    to_camel_case(&param.column_name),
-                    capnp_field_index,
-                    capnp_type
-                ));
-                capnp_field_index += 1;
-
                 rust_fields.push(format!(
                     "    pub {}: {},",
                     param.column_name, mapping.rust_type
@@ -216,11 +194,6 @@ impl<'a> ArtifactGenerator<'a> {
                 idx = grpc_envelope_variants.len() + 2
             ));
 
-            capnp_structs.push(format!(
-                "struct {capnp_struct_name} {{\n{}\n}}",
-                capnp_fields.join("\n")
-            ));
-
             rust_structs.push(format!(
                 "#[derive(Debug, Clone, Serialize, Deserialize, Identifiable, Queryable)]\n#[diesel(table_name = {table_name})]\npub struct {struct_name} {{\n{}\n}}",
                 rust_fields.join("\n")
@@ -243,7 +216,6 @@ impl<'a> ArtifactGenerator<'a> {
         );
         let grpc_proto =
             build_grpc_proto(grpc_messages, grpc_envelope_variants);
-        let capnp_schema = build_capnp_schema(capnp_structs);
         let rust_models = build_rust_models(
             rust_structs,
             rust_uses_primitives,
@@ -258,7 +230,6 @@ impl<'a> ArtifactGenerator<'a> {
             },
             graphql_schema,
             grpc_proto,
-            capnp_schema,
             rust_models,
             diesel_schema,
         })
@@ -294,10 +265,6 @@ impl<'a> ArtifactGenerator<'a> {
             api_models_dir.join("indexer.proto"),
             &artifacts.grpc_proto,
         )?;
-        fs::write(
-            api_models_dir.join("indexer.capnp"),
-            &artifacts.capnp_schema,
-        )?;
         fs::write(db_dir.join("models.rs"), &artifacts.rust_models)?;
         fs::write(db_dir.join("schema.rs"), &artifacts.diesel_schema)?;
 
@@ -308,27 +275,32 @@ impl<'a> ArtifactGenerator<'a> {
         })?;
 
         let proto_path = api_models_dir.join("indexer.proto");
+        let protoc = protoc_bin_path().map_err(|err| {
+            GeneratorError::Grpc(format!(
+                "Failed to locate bundled protoc: {err}"
+            ))
+        })?;
+        let protoc_include =
+            protoc_bin_vendored::include_path().map_err(|err| {
+                GeneratorError::Grpc(format!(
+                    "Failed to locate bundled protobuf includes: {err}"
+                ))
+            })?;
+
+        std::env::set_var("PROTOC", &protoc);
+        std::env::set_var("PROTOC_INCLUDE", &protoc_include);
+
         configure()
             .build_client(true)
             .build_server(true)
             .out_dir(&api_models_dir)
             .compile(
                 &[proto_path.to_string_lossy().to_string()],
-                &[api_models_dir.clone()],
+                &[api_models_dir.clone(), protoc_include],
             )
             .map_err(|err| {
                 GeneratorError::Grpc(format!(
                     "Failed to generate gRPC code: {err}"
-                ))
-            })?;
-
-        CompilerCommand::new()
-            .file(api_models_dir.join("indexer.capnp"))
-            .output_path(&api_models_dir)
-            .run()
-            .map_err(|err| {
-                GeneratorError::Capnp(format!(
-                    "Failed to generate Cap'n Proto code: {err}"
                 ))
             })?;
 
@@ -338,10 +310,6 @@ impl<'a> ArtifactGenerator<'a> {
 
 pub mod grpc {
     include!("indexer.rs");
-}
-
-pub mod capnp {
-    include!("indexer_capnp.rs");
 }
 "#;
 
@@ -452,19 +420,6 @@ fn build_grpc_proto(
     proto
 }
 
-fn build_capnp_schema(structs: Vec<String>) -> String {
-    let mut schema = String::new();
-    schema.push_str("# Auto-generated Cap'n Proto schema\n");
-    schema.push_str("@0xbf5147bf1cd508c0;\n\n");
-
-    for structure in structs {
-        schema.push_str(&structure);
-        schema.push_str("\n\n");
-    }
-
-    schema.trim_end().to_owned()
-}
-
 fn build_rust_models(
     structs: Vec<String>,
     primitive_imports: BTreeSet<RustPrimitive>,
@@ -525,7 +480,6 @@ pub enum GeneratorError {
     Abi(String),
     Io(io::Error),
     Grpc(String),
-    Capnp(String),
     Graphql(String),
 }
 
@@ -541,7 +495,6 @@ impl fmt::Display for GeneratorError {
             GeneratorError::Abi(msg) => f.write_str(msg),
             GeneratorError::Io(err) => write!(f, "{err}"),
             GeneratorError::Grpc(msg) => f.write_str(msg),
-            GeneratorError::Capnp(msg) => f.write_str(msg),
             GeneratorError::Graphql(msg) => f.write_str(msg),
         }
     }
@@ -555,7 +508,6 @@ impl From<GeneratorError> for RunicError {
             GeneratorError::Abi(msg) => RunicError::Abi(msg),
             GeneratorError::Io(err) => RunicError::Io(err),
             GeneratorError::Grpc(msg) => RunicError::Abi(msg),
-            GeneratorError::Capnp(msg) => RunicError::Abi(msg),
             GeneratorError::Graphql(msg) => RunicError::Abi(msg),
         }
     }
@@ -566,7 +518,6 @@ pub struct GeneratedArtifacts {
     pub sql: SqlArtifacts,
     pub graphql_schema: String,
     pub grpc_proto: String,
-    pub capnp_schema: String,
     pub rust_models: String,
     pub diesel_schema: String,
 }
@@ -586,8 +537,6 @@ struct TypeMapping {
     graphql_scalars: BTreeSet<GraphqlScalar>,
     grpc_type: String,
     grpc_repeated: bool,
-    capnp_type: String,
-    capnp_is_list: bool,
     sql_postgres: String,
     sql_sqlite: String,
     diesel_type: &'static str,
@@ -768,8 +717,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 graphql_scalars: scalars,
                 grpc_type: "string".to_string(),
                 grpc_repeated: false,
-                capnp_type: "Text".to_string(),
-                capnp_is_list: false,
                 sql_postgres: "TEXT".to_string(),
                 sql_sqlite: "TEXT".to_string(),
                 diesel_type: "Text",
@@ -783,8 +730,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
             graphql_scalars: BTreeSet::new(),
             grpc_type: "bool".to_string(),
             grpc_repeated: false,
-            capnp_type: "Bool".to_string(),
-            capnp_is_list: false,
             sql_postgres: "BOOLEAN".to_string(),
             sql_sqlite: "INTEGER".to_string(),
             diesel_type: "Bool",
@@ -800,8 +745,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 graphql_scalars: scalars,
                 grpc_type: "bytes".to_string(),
                 grpc_repeated: false,
-                capnp_type: "Data".to_string(),
-                capnp_is_list: false,
                 sql_postgres: "BYTEA".to_string(),
                 sql_sqlite: "BLOB".to_string(),
                 diesel_type: "Binary",
@@ -815,8 +758,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
             graphql_scalars: BTreeSet::new(),
             grpc_type: "string".to_string(),
             grpc_repeated: false,
-            capnp_type: "Text".to_string(),
-            capnp_is_list: false,
             sql_postgres: "TEXT".to_string(),
             sql_sqlite: "TEXT".to_string(),
             diesel_type: "Text",
@@ -837,8 +778,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 graphql_scalars: scalars,
                 grpc_type: inner_mapping.grpc_type,
                 grpc_repeated: true,
-                capnp_type: inner_mapping.capnp_type,
-                capnp_is_list: true,
                 sql_postgres: "JSONB".to_string(),
                 sql_sqlite: "TEXT".to_string(),
                 diesel_type: "Text",
@@ -855,8 +794,6 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 graphql_scalars: scalars,
                 grpc_type: "string".to_string(),
                 grpc_repeated: false,
-                capnp_type: "Text".to_string(),
-                capnp_is_list: false,
                 sql_postgres: "JSONB".to_string(),
                 sql_sqlite: "TEXT".to_string(),
                 diesel_type: "Text",
@@ -875,8 +812,6 @@ fn map_uint(size: usize) -> TypeMapping {
             graphql_scalars: BTreeSet::new(),
             grpc_type: "uint32".to_string(),
             grpc_repeated: false,
-            capnp_type: "UInt32".to_string(),
-            capnp_is_list: false,
             sql_postgres: "INTEGER".to_string(),
             sql_sqlite: "INTEGER".to_string(),
             diesel_type: "Integer",
@@ -892,8 +827,6 @@ fn map_uint(size: usize) -> TypeMapping {
             graphql_scalars: scalars,
             grpc_type: "uint64".to_string(),
             grpc_repeated: false,
-            capnp_type: "UInt64".to_string(),
-            capnp_is_list: false,
             sql_postgres: "BIGINT".to_string(),
             sql_sqlite: "INTEGER".to_string(),
             diesel_type: "BigInt",
@@ -911,8 +844,6 @@ fn map_uint(size: usize) -> TypeMapping {
             graphql_scalars: scalars,
             grpc_type: "string".to_string(),
             grpc_repeated: false,
-            capnp_type: "Text".to_string(),
-            capnp_is_list: false,
             sql_postgres: "NUMERIC".to_string(),
             sql_sqlite: "TEXT".to_string(),
             diesel_type: "Numeric",
@@ -930,8 +861,6 @@ fn map_int(size: usize) -> TypeMapping {
             graphql_scalars: BTreeSet::new(),
             grpc_type: "int32".to_string(),
             grpc_repeated: false,
-            capnp_type: "Int32".to_string(),
-            capnp_is_list: false,
             sql_postgres: "INTEGER".to_string(),
             sql_sqlite: "INTEGER".to_string(),
             diesel_type: "Integer",
@@ -947,8 +876,6 @@ fn map_int(size: usize) -> TypeMapping {
             graphql_scalars: scalars,
             grpc_type: "int64".to_string(),
             grpc_repeated: false,
-            capnp_type: "Int64".to_string(),
-            capnp_is_list: false,
             sql_postgres: "BIGINT".to_string(),
             sql_sqlite: "INTEGER".to_string(),
             diesel_type: "BigInt",
@@ -966,8 +893,6 @@ fn map_int(size: usize) -> TypeMapping {
             graphql_scalars: scalars,
             grpc_type: "string".to_string(),
             grpc_repeated: false,
-            capnp_type: "Text".to_string(),
-            capnp_is_list: false,
             sql_postgres: "NUMERIC".to_string(),
             sql_sqlite: "TEXT".to_string(),
             diesel_type: "Numeric",

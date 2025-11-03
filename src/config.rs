@@ -12,8 +12,6 @@ pub enum API {
     Graphql,
     /// Expose services via gRPC.
     Grpc,
-    /// Expose services via Cap'n Proto.
-    Capnproto,
 }
 
 impl fmt::Display for API {
@@ -21,7 +19,6 @@ impl fmt::Display for API {
         f.write_str(match self {
             API::Graphql => "graphql",
             API::Grpc => "grpc",
-            API::Capnproto => "capnproto",
         })
     }
 }

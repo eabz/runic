@@ -324,7 +324,7 @@ fn determine_database_uri(
 }
 
 fn prompt_api(default: API) -> Result<API, RunicError> {
-    let options = [API::Graphql, API::Grpc, API::Capnproto];
+    let options = [API::Graphql, API::Grpc];
     let labels: Vec<String> =
         options.iter().map(|api| api.to_string()).collect();
     let default_index =

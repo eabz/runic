@@ -25,7 +25,6 @@ async-graphql = "7"
 async-graphql-axum = "7"
 axum = "0.7"
 tower = "0.4"
-capnp = "0.17"
 url = "2"
 postgres = "0.19"
 tokio-stream = "0.1"
@@ -45,8 +44,6 @@ const API_GRAPHQL_TEMPLATE: &str =
     include_str!("../template/src/api/graphql.rs");
 const API_GRPC_TEMPLATE: &str =
     include_str!("../template/src/api/grpc.rs");
-const API_CAPNPROTO_TEMPLATE: &str =
-    include_str!("../template/src/api/capnproto.rs");
 const DB_MOD_TEMPLATE: &str = include_str!("../template/src/db/mod.rs");
 const DB_SQL_TEMPLATE: &str = include_str!("../template/src/db/sql.rs");
 
@@ -77,10 +74,6 @@ pub fn write_runic_api(project_root: &Path) -> Result<(), RunicError> {
     write_embedded_template(
         &project_root.join("src/api/grpc.rs"),
         API_GRPC_TEMPLATE,
-    )?;
-    write_embedded_template(
-        &project_root.join("src/api/capnproto.rs"),
-        API_CAPNPROTO_TEMPLATE,
     )
 }
 

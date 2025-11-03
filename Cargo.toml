@@ -12,8 +12,8 @@ toml = "0.8"
 dialoguer = { version = "0.11", features = ["completion"] }
 ethers-core = "2"
 async-graphql-parser = "7"
-capnpc = "0.17"
 tonic-build = "0.11"
+protoc-bin-vendored = "3"
 
 [[bin]]
 path = "bin/runic.rs"
