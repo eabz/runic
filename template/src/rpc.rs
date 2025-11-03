@@ -15,7 +15,6 @@ pub struct Rpc {
 }
 
 impl Rpc {
-    /// Constructs a new RPC client using the provided configuration.
     pub async fn new(config: Arc<RunicConfig>, abi: Arc<JsonAbi>) -> Self {
         info!("Starting rpc service");
 
@@ -30,7 +29,6 @@ impl Rpc {
     }
 
     pub async fn listen_events(&self) {
-        println!("{:?}", self.abi);
         let events = self.abi.events.clone();
 
         info!("Listening to {} events of the contract", events.len());

@@ -6,9 +6,11 @@ use runic::{
         API, ChildContractConfig, Database, RunicConfig, write_config,
     },
     errors::RunicError,
+    generator::ArtifactGenerator,
     templates::{
-        write_cargo_toml, write_runic_config, write_runic_indexer,
-        write_runic_lib, write_runic_rpc,
+        write_cargo_toml, write_runic_api, write_runic_config,
+        write_runic_db, write_runic_indexer, write_runic_lib,
+        write_runic_rpc,
     },
     utils::{
         SimplePathCompletion, load_json_abi, print_banner, print_section,
@@ -42,7 +44,7 @@ impl Default for RunicDefaults {
     fn default() -> Self {
         Self {
             default_api: API::Graphql,
-            default_db: Database::Redb,
+            default_db: Database::Sqlite,
             default_start_block: 0,
             default_contract: String::from(
                 "0x0000000000000000000000000000000000000000",
@@ -106,6 +108,8 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     write_runic_indexer(&project_root)?;
     write_runic_config(&project_root)?;
     write_runic_lib(&project_root)?;
+    write_runic_db(&project_root)?;
+    write_runic_api(&project_root)?;
     write_runic_rpc(&project_root)?;
 
     let abi_dir = project_root.join("src").join("abi");
@@ -117,6 +121,17 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     if let Some(child_source) = &child_abi_source {
         fs::copy(child_source, &child_target)?;
     }
+
+    let child_abi = if child_abi_source.is_some() {
+        Some(load_json_abi(&child_target)?)
+    } else {
+        None
+    };
+
+    let generator =
+        ArtifactGenerator::new(&parsed_abi, child_abi.as_ref());
+    let artifacts = generator.generate()?;
+    generator.write_to_disk(&project_root, &artifacts)?;
 
     print_section("Summary");
     println!("- Project folder: {}", folder_name);
@@ -265,7 +280,7 @@ fn prompt_start_block(default: i64) -> Result<i64, RunicError> {
 }
 
 fn prompt_database(default: Database) -> Result<Database, RunicError> {
-    let options = [Database::Redb];
+    let options = [Database::Sqlite, Database::Postgres];
     let labels: Vec<String> =
         options.iter().map(|db| db.to_string()).collect();
     let default_index =

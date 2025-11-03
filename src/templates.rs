@@ -27,6 +27,15 @@ const LIB_RS_TEMPLATE: &str = include_str!("../template/src/lib.rs");
 const RPC_RS_TEMPLATE: &str = include_str!("../template/src/rpc.rs");
 const RUNIC_INDEXER_TEMPLATE: &str =
     include_str!("../template/bin/runic-indexer.rs");
+const API_MOD_TEMPLATE: &str = include_str!("../template/src/api/mod.rs");
+const API_GRAPHQL_TEMPLATE: &str =
+    include_str!("../template/src/api/graphql.rs");
+const API_GRPC_TEMPLATE: &str =
+    include_str!("../template/src/api/grpc.rs");
+const API_CAPNPROTO_TEMPLATE: &str =
+    include_str!("../template/src/api/capnproto.rs");
+const DB_MOD_TEMPLATE: &str = include_str!("../template/src/db/mod.rs");
+const DB_SQL_TEMPLATE: &str = include_str!("../template/src/db/sql.rs");
 
 pub fn write_cargo_toml(project_root: &Path) -> Result<(), RunicError> {
     let destination = project_root.join("Cargo.toml");
@@ -41,6 +50,36 @@ pub fn write_runic_config(project_root: &Path) -> Result<(), RunicError> {
 pub fn write_runic_lib(project_root: &Path) -> Result<(), RunicError> {
     let destination = project_root.join("src/lib.rs");
     write_embedded_template(&destination, LIB_RS_TEMPLATE)
+}
+
+pub fn write_runic_api(project_root: &Path) -> Result<(), RunicError> {
+    write_embedded_template(
+        &project_root.join("src/api/mod.rs"),
+        API_MOD_TEMPLATE,
+    )?;
+    write_embedded_template(
+        &project_root.join("src/api/graphql.rs"),
+        API_GRAPHQL_TEMPLATE,
+    )?;
+    write_embedded_template(
+        &project_root.join("src/api/grpc.rs"),
+        API_GRPC_TEMPLATE,
+    )?;
+    write_embedded_template(
+        &project_root.join("src/api/capnproto.rs"),
+        API_CAPNPROTO_TEMPLATE,
+    )
+}
+
+pub fn write_runic_db(project_root: &Path) -> Result<(), RunicError> {
+    write_embedded_template(
+        &project_root.join("src/db/mod.rs"),
+        DB_MOD_TEMPLATE,
+    )?;
+    write_embedded_template(
+        &project_root.join("src/db/sql.rs"),
+        DB_SQL_TEMPLATE,
+    )
 }
 
 pub fn write_runic_rpc(project_root: &Path) -> Result<(), RunicError> {

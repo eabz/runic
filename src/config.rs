@@ -26,14 +26,17 @@ impl fmt::Display for API {
 )]
 /// Supported database backends for generated projects.
 pub enum Database {
-    /// Use the RedB embedded database.
-    Redb,
+    /// Use a PostgreSQL database.
+    Postgres,
+    /// Use an embedded SQLite database.
+    Sqlite,
 }
 
 impl fmt::Display for Database {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Database::Redb => "redb",
+            Database::Postgres => "postgres",
+            Database::Sqlite => "sqlite",
         })
     }
 }
