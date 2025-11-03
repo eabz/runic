@@ -1,10 +1,4 @@
-use std::{fs, path::Path};
-
-use tera::Context;
-
-use crate::{errors::RunicError, templates::render_template};
-
-pub const RUNIC_RPC_TEMPLATE: &str = r#"use std::sync::Arc;
+use std::sync::Arc;
 
 use alloy::{
     json_abi::JsonAbi,
@@ -41,17 +35,4 @@ impl Rpc {
 
         info!("Listening to {} events of the contract", events.len());
     }
-}
-
-"#;
-
-pub fn write_runic_rpc(project_root: &Path) -> Result<(), RunicError> {
-    let bin_dir = project_root.join("src");
-    let runic_rpc_path = bin_dir.join("rpc.rs");
-    let context = Context::new();
-    let runic_rpc_contents =
-        render_template(RUNIC_RPC_TEMPLATE, &context)?;
-
-    fs::write(runic_rpc_path, runic_rpc_contents)?;
-    Ok(())
 }

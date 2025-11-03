@@ -7,9 +7,8 @@ use runic::{
     },
     errors::RunicError,
     templates::{
-        cargo::write_cargo_toml, config::write_runic_config,
-        indexer::write_runic_indexer, lib::write_runic_lib,
-        rpc::write_runic_rpc,
+        write_cargo_toml, write_runic_config, write_runic_indexer,
+        write_runic_lib, write_runic_rpc,
     },
     utils::{
         SimplePathCompletion, load_json_abi, print_banner, print_section,
