@@ -1,6 +1,6 @@
 use alloy::{json_abi::JsonAbi, primitives::Address};
 use clap::Parser;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use runic::{
     config::{
         API, ChildContractConfig, Database, RunicConfig, write_config,
@@ -72,9 +72,8 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
 
     let abi_path =
         prompt_existing_json_path("Path to the contract ABI JSON")?;
-    let parsed_abi = load_json_abi(&abi_path)?;
 
-    println!("[ok] loaded ABI from {}", abi_path.display());
+    let parsed_abi = load_json_abi(&abi_path)?;
 
     let start_block = prompt_start_block(defaults.default_start_block)?;
 
@@ -117,7 +116,6 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     let child_target = abi_dir.join("child-abi.json");
     if let Some(child_source) = &child_abi_source {
         fs::copy(child_source, &child_target)?;
-        println!("[ok] Copied child ABI to {}", child_target.display());
     }
 
     print_section("Summary");
@@ -156,16 +154,17 @@ fn create_project_layout(project_root: &Path) -> Result<(), RunicError> {
 
 fn prompt_project_folder() -> Result<(String, PathBuf), RunicError> {
     loop {
-        let folder_name: String = Input::new()
-            .with_prompt("Project folder name")
-            .validate_with(|input: &String| -> Result<(), &str> {
-                if input.trim().is_empty() {
-                    Err("Folder name cannot be empty.")
-                } else {
-                    Ok(())
-                }
-            })
-            .interact_text()?;
+        let folder_name: String =
+            Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("Project folder name")
+                .validate_with(|input: &String| -> Result<(), &str> {
+                    if input.trim().is_empty() {
+                        Err("Folder name cannot be empty.")
+                    } else {
+                        Ok(())
+                    }
+                })
+                .interact_text()?;
 
         let folder_name = folder_name.trim().to_owned();
         let project_root = PathBuf::from(&folder_name);
@@ -184,7 +183,7 @@ fn prompt_project_folder() -> Result<(String, PathBuf), RunicError> {
 fn prompt_contract_address(default: String) -> Result<String, RunicError> {
     let prompt = "Contract address:".to_string();
 
-    let input: String = Input::new()
+    let input: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .allow_empty(true)
         .default(default.to_owned())
@@ -214,7 +213,7 @@ fn prompt_contract_address(default: String) -> Result<String, RunicError> {
 }
 
 fn prompt_existing_json_path(prompt: &str) -> Result<PathBuf, RunicError> {
-    let input: String = Input::new()
+    let input: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .completion_with(&SimplePathCompletion)
         .validate_with(|value: &String| -> Result<(), String> {
@@ -249,7 +248,7 @@ fn prompt_existing_json_path(prompt: &str) -> Result<PathBuf, RunicError> {
 }
 
 fn prompt_start_block(default: i64) -> Result<i64, RunicError> {
-    let block: i64 = Input::new()
+    let block: i64 = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Starting block")
         .default(default)
         .show_default(true)
@@ -271,7 +270,7 @@ fn prompt_database(default: Database) -> Result<Database, RunicError> {
         options.iter().map(|db| db.to_string()).collect();
     let default_index =
         options.iter().position(|&db| db == default).unwrap_or(0);
-    let selected = Select::new()
+    let selected = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Database engine")
         .items(&labels)
         .default(default_index)
@@ -286,7 +285,7 @@ fn prompt_api(default: API) -> Result<API, RunicError> {
         options.iter().map(|api| api.to_string()).collect();
     let default_index =
         options.iter().position(|&api| api == default).unwrap_or(0);
-    let selected = Select::new()
+    let selected = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("API surface")
         .items(&labels)
         .default(default_index)
@@ -298,7 +297,7 @@ fn prompt_api(default: API) -> Result<API, RunicError> {
 fn prompt_child_contract_tracking(
     abi: &JsonAbi,
 ) -> Result<(Option<ChildContractConfig>, Option<PathBuf>), RunicError> {
-    let track_children = Confirm::new()
+    let track_children = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt(
             "Does this contract create child contracts that need tracking?",
         )
@@ -339,7 +338,7 @@ fn prompt_child_contract_tracking(
         ));
     }
 
-    let selected_index = Select::new()
+    let selected_index = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select the event to track for child contracts")
         .items(&event_options)
         .max_length(8)
