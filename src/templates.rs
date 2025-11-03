@@ -16,6 +16,19 @@ log = "0.4"
 tokio = { version = "1", features = ["full"] }
 simple_logger = { version = "5", features = ["colors"] }
 serde_json = "1"
+diesel = { version = "2", features = ["postgres", "sqlite", "r2d2"] }
+diesel_migrations = "2"
+r2d2 = "0.8"
+tonic = { version = "0.11", features = ["transport"] }
+prost = "0.12"
+async-graphql = "7"
+async-graphql-axum = "7"
+axum = "0.7"
+tower = "0.4"
+capnp = "0.17"
+url = "2"
+postgres = "0.19"
+tokio-stream = "0.1"
 
 [[bin]]
 path = "bin/runic-indexer.rs"

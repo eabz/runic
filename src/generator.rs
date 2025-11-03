@@ -1,11 +1,14 @@
 use crate::errors::RunicError;
 use alloy::json_abi::{Event, EventParam, JsonAbi};
+use async_graphql_parser::parse_schema;
+use capnpc::CompilerCommand;
 use ethers_core::abi::{ParamType, param_type::Reader};
 use std::{
     collections::{BTreeSet, HashMap},
     fmt, fs, io,
     path::Path,
 };
+use tonic_build::configure;
 
 pub struct ArtifactGenerator<'a> {
     primary_abi: &'a JsonAbi,
@@ -41,6 +44,7 @@ impl<'a> ArtifactGenerator<'a> {
         let mut rust_structs = Vec::new();
         let mut rust_uses_primitives = BTreeSet::new();
         let mut needs_json_value = false;
+        let mut diesel_tables = Vec::new();
 
         graphql_scalars.insert(GraphqlScalar::BigInt);
         graphql_scalars.insert(GraphqlScalar::Bytes);
@@ -92,6 +96,28 @@ impl<'a> ArtifactGenerator<'a> {
                 "    pub log_index: i32,".to_string(),
             ];
 
+            let mut rust_new_fields = vec![
+                "    pub block_number: i64,".to_string(),
+                "    pub transaction_hash: String,".to_string(),
+                "    pub log_index: i32,".to_string(),
+            ];
+
+            let mut diesel_columns = vec![
+                DieselColumn { name: "id".to_string(), ty: "BigInt" },
+                DieselColumn {
+                    name: "block_number".to_string(),
+                    ty: "BigInt",
+                },
+                DieselColumn {
+                    name: "transaction_hash".to_string(),
+                    ty: "Text",
+                },
+                DieselColumn {
+                    name: "log_index".to_string(),
+                    ty: "Integer",
+                },
+            ];
+
             let mut grpc_field_index = 4;
             let mut capnp_field_index = 3;
 
@@ -118,6 +144,11 @@ impl<'a> ArtifactGenerator<'a> {
                     "{} {} NOT NULL",
                     param.column_name, mapping.sql_sqlite
                 ));
+
+                diesel_columns.push(DieselColumn {
+                    name: param.column_name.clone(),
+                    ty: mapping.diesel_type,
+                });
 
                 graphql_fields.push(format!(
                     "    {}: {}",
@@ -146,6 +177,10 @@ impl<'a> ArtifactGenerator<'a> {
                 capnp_field_index += 1;
 
                 rust_fields.push(format!(
+                    "    pub {}: {},",
+                    param.column_name, mapping.rust_type
+                ));
+                rust_new_fields.push(format!(
                     "    pub {}: {},",
                     param.column_name, mapping.rust_type
                 ));
@@ -187,9 +222,18 @@ impl<'a> ArtifactGenerator<'a> {
             ));
 
             rust_structs.push(format!(
-                "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {struct_name} {{\n{}\n}}",
+                "#[derive(Debug, Clone, Serialize, Deserialize, Identifiable, Queryable)]\n#[diesel(table_name = {table_name})]\npub struct {struct_name} {{\n{}\n}}",
                 rust_fields.join("\n")
             ));
+            rust_structs.push(format!(
+                "#[derive(Debug, Clone, Serialize, Deserialize, Insertable)]\n#[diesel(table_name = {table_name})]\npub struct New{struct_name} {{\n{}\n}}",
+                rust_new_fields.join("\n")
+            ));
+
+            diesel_tables.push(DieselTable {
+                name: table_name.clone(),
+                columns: diesel_columns,
+            });
         }
 
         let graphql_schema = build_graphql_schema(
@@ -205,6 +249,7 @@ impl<'a> ArtifactGenerator<'a> {
             rust_uses_primitives,
             needs_json_value,
         );
+        let diesel_schema = build_diesel_schema(diesel_tables);
 
         Ok(GeneratedArtifacts {
             sql: SqlArtifacts {
@@ -215,6 +260,7 @@ impl<'a> ArtifactGenerator<'a> {
             grpc_proto,
             capnp_schema,
             rust_models,
+            diesel_schema,
         })
     }
 
@@ -253,6 +299,53 @@ impl<'a> ArtifactGenerator<'a> {
             &artifacts.capnp_schema,
         )?;
         fs::write(db_dir.join("models.rs"), &artifacts.rust_models)?;
+        fs::write(db_dir.join("schema.rs"), &artifacts.diesel_schema)?;
+
+        parse_schema(&artifacts.graphql_schema).map_err(|err| {
+            GeneratorError::Graphql(format!(
+                "Failed to validate GraphQL schema: {err}"
+            ))
+        })?;
+
+        let proto_path = api_models_dir.join("indexer.proto");
+        configure()
+            .build_client(true)
+            .build_server(true)
+            .out_dir(&api_models_dir)
+            .compile(
+                &[proto_path.to_string_lossy().to_string()],
+                &[api_models_dir.clone()],
+            )
+            .map_err(|err| {
+                GeneratorError::Grpc(format!(
+                    "Failed to generate gRPC code: {err}"
+                ))
+            })?;
+
+        CompilerCommand::new()
+            .file(api_models_dir.join("indexer.capnp"))
+            .output_path(&api_models_dir)
+            .run()
+            .map_err(|err| {
+                GeneratorError::Capnp(format!(
+                    "Failed to generate Cap'n Proto code: {err}"
+                ))
+            })?;
+
+        let models_mod = r#"pub mod graphql {
+    pub const SDL: &str = include_str!("schema.graphql");
+}
+
+pub mod grpc {
+    include!("indexer.rs");
+}
+
+pub mod capnp {
+    include!("indexer_capnp.rs");
+}
+"#;
+
+        fs::write(api_models_dir.join("mod.rs"), models_mod)?;
 
         Ok(())
     }
@@ -380,6 +473,8 @@ fn build_rust_models(
     let mut output = String::new();
     output.push_str("// Auto-generated Rust models\n");
     output.push_str("use serde::{Deserialize, Serialize};\n");
+    output.push_str("use diesel::prelude::*;\n");
+    output.push_str("use super::schema::*;\n");
 
     if !primitive_imports.is_empty() {
         let mut primitives: Vec<&'static str> =
@@ -405,10 +500,33 @@ fn build_rust_models(
     output.trim_end().to_owned()
 }
 
+fn build_diesel_schema(tables: Vec<DieselTable>) -> String {
+    let mut output = String::new();
+    output.push_str("// Auto-generated Diesel schema\n");
+
+    for table in tables {
+        output.push_str("diesel::table! {\n");
+        output.push_str("    use diesel::sql_types::*;\n");
+        output.push_str(&format!("    {} (id) {{\n", table.name));
+        for column in table.columns {
+            output.push_str(&format!(
+                "        {} -> {},\n",
+                column.name, column.ty
+            ));
+        }
+        output.push_str("    }\n}\n\n");
+    }
+
+    output.trim_end().to_owned()
+}
+
 #[derive(Debug)]
 pub enum GeneratorError {
     Abi(String),
     Io(io::Error),
+    Grpc(String),
+    Capnp(String),
+    Graphql(String),
 }
 
 impl From<io::Error> for GeneratorError {
@@ -422,6 +540,9 @@ impl fmt::Display for GeneratorError {
         match self {
             GeneratorError::Abi(msg) => f.write_str(msg),
             GeneratorError::Io(err) => write!(f, "{err}"),
+            GeneratorError::Grpc(msg) => f.write_str(msg),
+            GeneratorError::Capnp(msg) => f.write_str(msg),
+            GeneratorError::Graphql(msg) => f.write_str(msg),
         }
     }
 }
@@ -433,6 +554,9 @@ impl From<GeneratorError> for RunicError {
         match err {
             GeneratorError::Abi(msg) => RunicError::Abi(msg),
             GeneratorError::Io(err) => RunicError::Io(err),
+            GeneratorError::Grpc(msg) => RunicError::Abi(msg),
+            GeneratorError::Capnp(msg) => RunicError::Abi(msg),
+            GeneratorError::Graphql(msg) => RunicError::Abi(msg),
         }
     }
 }
@@ -444,6 +568,7 @@ pub struct GeneratedArtifacts {
     pub grpc_proto: String,
     pub capnp_schema: String,
     pub rust_models: String,
+    pub diesel_schema: String,
 }
 
 #[derive(Debug)]
@@ -465,6 +590,17 @@ struct TypeMapping {
     capnp_is_list: bool,
     sql_postgres: String,
     sql_sqlite: String,
+    diesel_type: &'static str,
+}
+
+struct DieselTable {
+    name: String,
+    columns: Vec<DieselColumn>,
+}
+
+struct DieselColumn {
+    name: String,
+    ty: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -636,6 +772,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 capnp_is_list: false,
                 sql_postgres: "TEXT".to_string(),
                 sql_sqlite: "TEXT".to_string(),
+                diesel_type: "Text",
             }
         }
         ParamType::Bool => TypeMapping {
@@ -650,6 +787,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "BOOLEAN".to_string(),
             sql_sqlite: "INTEGER".to_string(),
+            diesel_type: "Bool",
         },
         ParamType::Bytes | ParamType::FixedBytes(_) => {
             let mut scalars = BTreeSet::new();
@@ -666,6 +804,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 capnp_is_list: false,
                 sql_postgres: "BYTEA".to_string(),
                 sql_sqlite: "BLOB".to_string(),
+                diesel_type: "Binary",
             }
         }
         ParamType::String => TypeMapping {
@@ -680,6 +819,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "TEXT".to_string(),
             sql_sqlite: "TEXT".to_string(),
+            diesel_type: "Text",
         },
         ParamType::Uint(size) => map_uint(*size),
         ParamType::Int(size) => map_int(*size),
@@ -701,6 +841,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 capnp_is_list: true,
                 sql_postgres: "JSONB".to_string(),
                 sql_sqlite: "TEXT".to_string(),
+                diesel_type: "Text",
             }
         }
         ParamType::Tuple(_) => {
@@ -718,6 +859,7 @@ fn map_param_type(param: &ParamType) -> TypeMapping {
                 capnp_is_list: false,
                 sql_postgres: "JSONB".to_string(),
                 sql_sqlite: "TEXT".to_string(),
+                diesel_type: "Text",
             }
         }
     }
@@ -737,6 +879,7 @@ fn map_uint(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "INTEGER".to_string(),
             sql_sqlite: "INTEGER".to_string(),
+            diesel_type: "Integer",
         }
     } else if size <= 64 {
         let mut scalars = BTreeSet::new();
@@ -753,6 +896,7 @@ fn map_uint(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "BIGINT".to_string(),
             sql_sqlite: "INTEGER".to_string(),
+            diesel_type: "BigInt",
         }
     } else {
         let mut primitives = BTreeSet::new();
@@ -771,6 +915,7 @@ fn map_uint(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "NUMERIC".to_string(),
             sql_sqlite: "TEXT".to_string(),
+            diesel_type: "Numeric",
         }
     }
 }
@@ -789,6 +934,7 @@ fn map_int(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "INTEGER".to_string(),
             sql_sqlite: "INTEGER".to_string(),
+            diesel_type: "Integer",
         }
     } else if size <= 64 {
         let mut scalars = BTreeSet::new();
@@ -805,6 +951,7 @@ fn map_int(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "BIGINT".to_string(),
             sql_sqlite: "INTEGER".to_string(),
+            diesel_type: "BigInt",
         }
     } else {
         let mut primitives = BTreeSet::new();
@@ -823,6 +970,7 @@ fn map_int(size: usize) -> TypeMapping {
             capnp_is_list: false,
             sql_postgres: "NUMERIC".to_string(),
             sql_sqlite: "TEXT".to_string(),
+            diesel_type: "Numeric",
         }
     }
 }

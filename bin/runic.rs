@@ -80,6 +80,7 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     let start_block = prompt_start_block(defaults.default_start_block)?;
 
     let selected_db = prompt_database(defaults.default_db)?;
+    let database_uri = determine_database_uri(&selected_db)?;
 
     let selected_api = prompt_api(defaults.default_api)?;
 
@@ -97,6 +98,7 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
         start_block,
         selected_api,
         selected_db,
+        database_uri.clone(),
         child_contract,
     );
 
@@ -139,6 +141,7 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     println!("- Contract address: {}", contract_address);
     println!("- Start block: {}", start_block);
     println!("- Database engine: {}", selected_db);
+    println!("- Database URI: {}", database_uri);
     println!("- API surface: {}", selected_api);
     println!("- ABI source: {}", abi_path.display());
 
@@ -294,8 +297,34 @@ fn prompt_database(default: Database) -> Result<Database, RunicError> {
     Ok(options[selected])
 }
 
+fn determine_database_uri(
+    selected: &Database,
+) -> Result<String, RunicError> {
+    match selected {
+        Database::Sqlite => Ok(String::from("db.sqlite")),
+        Database::Postgres => {
+            let uri: String =
+                Input::<String>::with_theme(&ColorfulTheme::default())
+                    .with_prompt(
+                        "Postgres database URI (without database name)",
+                    )
+                    .default("postgresql://postgres@127.0.0.1".to_owned())
+                    .validate_with(|input: &String| -> Result<(), &str> {
+                        if input.trim().is_empty() {
+                            Err("Database URI cannot be empty.")
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .interact_text()?;
+
+            Ok(uri.trim().to_owned())
+        }
+    }
+}
+
 fn prompt_api(default: API) -> Result<API, RunicError> {
-    let options = [API::Graphql];
+    let options = [API::Graphql, API::Grpc, API::Capnproto];
     let labels: Vec<String> =
         options.iter().map(|api| api.to_string()).collect();
     let default_index =

@@ -1,20 +1,21 @@
 use super::{ApiAdapter, ApiError, ApiHandle};
+use crate::api::models;
 
 #[derive(Default)]
 pub struct GraphqlApi;
 
 #[derive(Debug, Clone)]
 pub struct GraphqlEndpoint {
-    url: &'static str,
+    sdl: &'static str,
 }
 
 impl GraphqlEndpoint {
     pub fn new() -> Self {
-        Self { url: "http://127.0.0.1:4000/graphql" }
+        Self { sdl: models::graphql::SDL }
     }
 
-    pub fn url(&self) -> &'static str {
-        self.url
+    pub fn schema(&self) -> &'static str {
+        self.sdl
     }
 }
 
@@ -24,10 +25,11 @@ impl ApiAdapter for GraphqlApi {
     }
 
     fn launch(&self) -> Result<ApiHandle, ApiError> {
+        let endpoint = GraphqlEndpoint::new();
         println!(
-            "Starting GraphQL service on {} (placeholder implementation)",
-            GraphqlEndpoint::new().url()
+            "GraphQL schema available with {} bytes",
+            endpoint.schema().len()
         );
-        Ok(ApiHandle::Graphql(GraphqlEndpoint::new()))
+        Ok(ApiHandle::Graphql(endpoint))
     }
 }

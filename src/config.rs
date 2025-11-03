@@ -9,14 +9,19 @@ use crate::errors::RunicError;
 )]
 /// Supported APIs that the generated indexer can expose.
 pub enum API {
-    /// Generate a GraphQL-compatible indexer.
     Graphql,
+    /// Expose services via gRPC.
+    Grpc,
+    /// Expose services via Cap'n Proto.
+    Capnproto,
 }
 
 impl fmt::Display for API {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             API::Graphql => "graphql",
+            API::Grpc => "grpc",
+            API::Capnproto => "capnproto",
         })
     }
 }
@@ -45,6 +50,7 @@ impl fmt::Display for Database {
 pub struct RunicConfig {
     pub contract: ContractConfig,
     pub network: NetworkConfig,
+    pub database: DatabaseConfig,
     pub engines: EngineConfig,
 }
 
@@ -54,6 +60,7 @@ impl RunicConfig {
         start_block: i64,
         api: API,
         db: Database,
+        db_uri: String,
         child_contract: Option<ChildContractConfig>,
     ) -> Self {
         Self {
@@ -63,6 +70,7 @@ impl RunicConfig {
                 child_contract,
             },
             network: NetworkConfig { rpc_endpoint: String::new() },
+            database: DatabaseConfig { uri: db_uri },
             engines: EngineConfig {
                 api: api.to_string(),
                 db: db.to_string(),
@@ -82,6 +90,11 @@ pub struct ContractConfig {
 #[derive(Serialize)]
 pub struct NetworkConfig {
     pub rpc_endpoint: String,
+}
+
+#[derive(Serialize)]
+pub struct DatabaseConfig {
+    pub uri: String,
 }
 
 #[derive(Serialize)]

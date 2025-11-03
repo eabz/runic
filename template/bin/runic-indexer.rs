@@ -4,7 +4,7 @@ use alloy::json_abi::JsonAbi;
 use runic_indexer::{
     api::{ApiHandle, ApiService},
     config::RunicConfig,
-    db::{Database, DatabaseConnection},
+    db::{Database, DatabaseHandle},
     rpc::Rpc,
 };
 use simple_logger::SimpleLogger;
@@ -37,27 +37,29 @@ async fn main() {
         process::exit(1);
     }
 
+    if matches!(
+        config.engines.db.to_lowercase().as_str(),
+        "postgres" | "postgresql"
+    ) && config.database.uri.trim().is_empty()
+    {
+        eprintln!(
+            "Config error: database.uri is empty for the Postgres backend. Please add it to Config.toml."
+        );
+        process::exit(1);
+    }
+
     let config = Arc::new(config);
 
-    let database =
-        Database::from_config(&config.engines).unwrap_or_else(|err| {
-            eprintln!("Failed to initialize database backend: {err}");
-            process::exit(1);
-        });
-
-    let db_connection = database.connect().unwrap_or_else(|err| {
-        eprintln!(
-            "Database backend `{}` failed to connect: {err}",
-            database.backend()
-        );
+    let database = Database::connect(&config).unwrap_or_else(|err| {
+        eprintln!("Failed to initialize database backend: {err}");
         process::exit(1);
     });
 
-    match &db_connection {
-        DatabaseConnection::Sqlite(_) => {
+    match database.handle() {
+        DatabaseHandle::Sqlite(_) => {
             println!("Connected to SQLite datastore");
         }
-        DatabaseConnection::Postgres(_) => {
+        DatabaseHandle::Postgres(_) => {
             println!("Connected to Postgres database");
         }
     }
@@ -77,7 +79,10 @@ async fn main() {
     });
 
     if let ApiHandle::Graphql(endpoint) = &api_handle {
-        println!("GraphQL endpoint running at {}", endpoint.url());
+        println!(
+            "GraphQL schema generated ({} bytes)",
+            endpoint.schema().len()
+        );
     }
 
     let abi_txt = fs::read_to_string("src/abi/abi.json")

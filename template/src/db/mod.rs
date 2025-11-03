@@ -1,14 +1,18 @@
-use crate::config::EngineConfig;
+use crate::config::RunicConfig;
 use std::{error::Error, fmt};
 
-pub mod sql;
 pub mod models;
+pub mod schema;
+mod sql;
+
+pub use sql::{PgPool, SqlitePool};
 
 #[derive(Debug)]
 pub enum DbError {
     UnsupportedBackend(String),
-    NotImplemented(&'static str),
+    Configuration(String),
     Initialization(String),
+    Migration(String),
 }
 
 impl fmt::Display for DbError {
@@ -17,55 +21,67 @@ impl fmt::Display for DbError {
             DbError::UnsupportedBackend(name) => {
                 write!(f, "Unsupported database backend `{name}`")
             }
-            DbError::NotImplemented(name) => {
-                write!(f, "{name} backend is not implemented yet")
-            }
+            DbError::Configuration(msg) => f.write_str(msg),
             DbError::Initialization(msg) => f.write_str(msg),
+            DbError::Migration(msg) => f.write_str(msg),
         }
     }
 }
 
 impl Error for DbError {}
 
-pub enum DatabaseConnection {
-    Postgres(sql::PostgresHandle),
-    Sqlite(sql::SqliteHandle),
+pub enum DatabaseHandle {
+    Postgres(PgPool),
+    Sqlite(SqlitePool),
 }
 
-pub trait DatabaseAdapter: Send + Sync {
-    fn backend(&self) -> &'static str;
-    fn connect(&self) -> Result<DatabaseConnection, DbError>;
+impl DatabaseHandle {
+    pub fn as_postgres(&self) -> Option<&PgPool> {
+        match self {
+            DatabaseHandle::Postgres(pool) => Some(pool),
+            DatabaseHandle::Sqlite(_) => None,
+        }
+    }
+
+    pub fn as_sqlite(&self) -> Option<&SqlitePool> {
+        match self {
+            DatabaseHandle::Postgres(_) => None,
+            DatabaseHandle::Sqlite(pool) => Some(pool),
+        }
+    }
 }
 
 pub struct Database {
-    adapter: Box<dyn DatabaseAdapter>,
+    backend: String,
+    handle: DatabaseHandle,
 }
 
 impl Database {
-    pub fn from_config(engine: &EngineConfig) -> Result<Self, DbError> {
-        let adapter: Box<dyn DatabaseAdapter> =
-            match engine.db.to_lowercase().as_str() {
-                "postgres" | "postgresql" => {
-                    Box::new(sql::PostgresDatabase::default())
-                }
-                "sqlite" | "sqlite3" => {
-                    Box::new(sql::SqliteDatabase::default())
-                }
-                other => {
-                    return Err(DbError::UnsupportedBackend(
-                        other.to_owned(),
-                    ));
-                }
-            };
-
-        Ok(Self { adapter })
+    pub fn connect(config: &RunicConfig) -> Result<Self, DbError> {
+        match config.engines.db.to_lowercase().as_str() {
+            "postgres" | "postgresql" => {
+                let pool = sql::connect_postgres(config)?;
+                Ok(Self {
+                    backend: "postgres".to_owned(),
+                    handle: DatabaseHandle::Postgres(pool),
+                })
+            }
+            "sqlite" | "sqlite3" => {
+                let pool = sql::connect_sqlite(config)?;
+                Ok(Self {
+                    backend: "sqlite".to_owned(),
+                    handle: DatabaseHandle::Sqlite(pool),
+                })
+            }
+            other => Err(DbError::UnsupportedBackend(other.to_owned())),
+        }
     }
 
-    pub fn backend(&self) -> &'static str {
-        self.adapter.backend()
+    pub fn backend(&self) -> &str {
+        &self.backend
     }
 
-    pub fn connect(&self) -> Result<DatabaseConnection, DbError> {
-        self.adapter.connect()
+    pub fn handle(&self) -> &DatabaseHandle {
+        &self.handle
     }
 }

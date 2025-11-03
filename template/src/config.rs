@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct RunicConfig {
     pub contract: ContractConfig,
     pub network: NetworkConfig,
+    pub database: DatabaseConfig,
     pub engines: EngineConfig,
 }
 
@@ -23,6 +24,11 @@ pub struct ChildContractConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
     pub rpc_endpoint: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatabaseConfig {
+    pub uri: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
