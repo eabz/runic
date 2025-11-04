@@ -104,6 +104,7 @@ pub struct EngineConfig {
 pub struct ChildContractConfig {
     pub event_signature: String,
     pub abi_path: String,
+    pub address_param_index: usize,
 }
 
 pub fn write_config(

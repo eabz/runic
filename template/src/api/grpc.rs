@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::async_trait;
 use tonic::{Request, Response, Status};
+use log::info;
 
 #[derive(Default)]
 pub struct GrpcApi;
@@ -45,7 +46,7 @@ impl ApiAdapter for GrpcApi {
     }
 
     fn launch(&self) -> Result<ApiHandle, ApiError> {
-        println!("gRPC stubs generated under src/api/models/indexer.rs");
+        info!("gRPC stubs generated under src/api/models/indexer.rs");
         Ok(ApiHandle::Grpc(GrpcEndpoint))
     }
 }

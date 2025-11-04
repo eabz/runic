@@ -1,5 +1,6 @@
 use super::{ApiAdapter, ApiError, ApiHandle};
 use crate::api::models;
+use log::info;
 
 #[derive(Default)]
 pub struct GraphqlApi;
@@ -26,7 +27,7 @@ impl ApiAdapter for GraphqlApi {
 
     fn launch(&self) -> Result<ApiHandle, ApiError> {
         let endpoint = GraphqlEndpoint::new();
-        println!(
+        info!(
             "GraphQL schema available with {} bytes",
             endpoint.schema().len()
         );

@@ -287,8 +287,8 @@ impl<'a> ArtifactGenerator<'a> {
                 ))
             })?;
 
-        std::env::set_var("PROTOC", &protoc);
-        std::env::set_var("PROTOC_INCLUDE", &protoc_include);
+        unsafe { std::env::set_var("PROTOC", &protoc) };
+        unsafe { std::env::set_var("PROTOC_INCLUDE", &protoc_include) };
 
         configure()
             .build_client(true)

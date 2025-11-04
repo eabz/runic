@@ -12,9 +12,7 @@ use runic::{
         write_runic_db, write_runic_indexer, write_runic_lib,
         write_runic_rpc,
     },
-    utils::{
-        SimplePathCompletion, load_json_abi, print_banner, print_section,
-    },
+    utils::{SimplePathCompletion, load_json_abi, print_banner},
 };
 use std::{
     fs,
@@ -67,7 +65,7 @@ fn main() {
 pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
     print_banner("Runic Indexer Scaffolder");
 
-    let (folder_name, project_root) = prompt_project_folder()?;
+    let (_, project_root) = prompt_project_folder()?;
 
     let contract_address =
         prompt_contract_address(defaults.default_contract)?;
@@ -86,8 +84,6 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
 
     let (child_contract, child_abi_source) =
         prompt_child_contract_tracking(&parsed_abi)?;
-
-    let child_contract_for_summary = child_contract.clone();
 
     fs::create_dir_all(&project_root)?;
 
@@ -134,26 +130,6 @@ pub fn scaffold(defaults: RunicDefaults) -> Result<(), RunicError> {
         ArtifactGenerator::new(&parsed_abi, child_abi.as_ref());
     let artifacts = generator.generate()?;
     generator.write_to_disk(&project_root, &artifacts)?;
-
-    print_section("Summary");
-    println!("- Project folder: {}", folder_name);
-    println!("- Output path: {}", project_root.display());
-    println!("- Contract address: {}", contract_address);
-    println!("- Start block: {}", start_block);
-    println!("- Database engine: {}", selected_db);
-    println!("- Database URI: {}", database_uri);
-    println!("- API surface: {}", selected_api);
-    println!("- ABI source: {}", abi_path.display());
-
-    if let Some(child_contract) = &child_contract_for_summary {
-        println!("- Child event: {}", child_contract.event_signature);
-    }
-
-    println!();
-    println!(
-        "Project created at `{}`. You can now build and run your indexer.",
-        project_root.display()
-    );
 
     Ok(())
 }
@@ -352,46 +328,89 @@ fn prompt_child_contract_tracking(
         return Ok((None, None));
     }
 
-    let mut event_options: Vec<String> = abi
+    let mut candidates: Vec<(String, alloy::json_abi::Event)> = abi
         .events
         .values()
         .flat_map(|events| {
-            events.iter().map(|event| {
+            events.iter().cloned().map(|event| {
                 let params = event
                     .inputs
                     .iter()
                     .map(|input| input.ty.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                if params.is_empty() {
+                let signature = if params.is_empty() {
                     format!("{}()", event.name)
                 } else {
                     format!("{}({})", event.name, params)
-                }
+                };
+                (signature, event)
             })
         })
         .collect();
 
-    event_options.sort();
-    event_options.dedup();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates.dedup_by(|a, b| a.0 == b.0);
 
-    if event_options.is_empty() {
+    if candidates.is_empty() {
         return Err(RunicError::Abi(
             "The provided ABI does not contain any events to monitor for child contracts."
                 .to_owned(),
         ));
     }
 
+    let event_labels: Vec<String> =
+        candidates.iter().map(|(label, _)| label.clone()).collect();
+
     let selected_index = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select the event to track for child contracts")
-        .items(&event_options)
+        .items(&event_labels)
         .max_length(8)
         .interact()?;
 
-    let selected_event = event_options
+    let (selected_signature, selected_event) = candidates
         .get(selected_index)
         .cloned()
         .expect("selection index should be valid");
+
+    let address_params: Vec<(usize, alloy::json_abi::EventParam)> =
+        selected_event
+            .inputs
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, param)| param.ty.eq_ignore_ascii_case("address"))
+            .collect();
+
+    if address_params.is_empty() {
+        return Err(RunicError::Abi(
+            "The selected event does not contain any address parameters to track child contracts.".to_owned(),
+        ));
+    }
+
+    let address_labels: Vec<String> = address_params
+        .iter()
+        .map(|(idx, param)| {
+            if param.name.trim().is_empty() {
+                format!("#{idx} (address)")
+            } else {
+                format!("#{idx} {} (address)", param.name)
+            }
+        })
+        .collect();
+
+    let address_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(
+            "Select which parameter contains the child contract address",
+        )
+        .items(&address_labels)
+        .default(0)
+        .interact()?;
+
+    let address_param_index = address_params
+        .get(address_selection)
+        .map(|(idx, _)| *idx)
+        .expect("address parameter selection should be valid");
 
     let child_source =
         prompt_existing_json_path("Path to the child contract ABI JSON")?;
@@ -399,8 +418,9 @@ fn prompt_child_contract_tracking(
     let _ = load_json_abi(&child_source)?;
 
     let child_config = ChildContractConfig {
-        event_signature: selected_event,
+        event_signature: selected_signature,
         abi_path: "src/abi/child-abi.json".to_owned(),
+        address_param_index,
     };
 
     Ok((Some(child_config), Some(child_source)))

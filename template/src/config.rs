@@ -19,6 +19,7 @@ pub struct ContractConfig {
 pub struct ChildContractConfig {
     pub event_signature: String,
     pub abi_path: String,
+    pub address_param_index: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

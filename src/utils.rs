@@ -14,12 +14,6 @@ pub fn print_banner(title: &str) {
     println!("{}", "=".repeat(title.len()));
 }
 
-pub fn print_section(title: &str) {
-    println!();
-    println!("{title}");
-    println!("{}", "-".repeat(title.len()));
-}
-
 pub fn load_json_abi(path: &Path) -> Result<JsonAbi, RunicError> {
     if !path.exists() {
         return Err(RunicError::Io(io::Error::new(
