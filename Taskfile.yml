@@ -1,0 +1,47 @@
+# Runic Indexer - Task Commands
+# Install: brew install go-task OR go install github.com/go-task/task/v3/cmd/task@latest
+# Usage: task <command>
+
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  up:
+    desc: Start the docker compose
+    cmds:
+      - docker compose up -d
+
+  build:
+    desc: Build the runic image
+    cmds:
+      - docker build . -t runic-indexer:latest
+
+  down:
+    desc: Stop the docker compose
+    cmds:
+      - docker compose down
+
+  clean:
+    desc: Stop the docker compose with volume removal (DESTRUCTIVE)
+    prompt: "WARNING: This will delete all data. Are you sure?"
+    cmds:
+      - docker compose down -v
+
+  logs:
+    desc: Show docker compose logs
+    cmds:
+      - docker compose logs -f -n 5
+
+  restart:grafana:
+    desc: Restart Grafana container
+    cmds:
+      - docker compose restart grafana
+
+  restart:runic:
+    desc: Restart Runic indexer container
+    cmds:
+      - docker compose restart runic

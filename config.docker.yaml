@@ -1,0 +1,15 @@
+clickhouse:
+  url: ""
+  user: ""
+  password: ""
+  database: "indexer"
+
+postgres:
+  host: "postgres"
+  port: 5432
+  user: "runic"
+  password: "secret_password"
+  database: "indexer"
+
+indexer:
+  hypersync_bearer_token: ""

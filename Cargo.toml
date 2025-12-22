@@ -1,0 +1,40 @@
+[package]
+name = "runic"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+alloy = { version = "1", features = ["full"] }
+anyhow = "1"
+chrono = { version = "0.4.42", features = ["serde"] }
+clickhouse = { version = "0.14", features = ["native-tls", "time", "inserter"] }
+config = "0.15"
+futures = "0.3"
+hypersync-client = "0.23.0"
+log = "0.4"
+bigdecimal = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+fastnum = "0.1"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+deadpool-postgres = "0.14"
+postgres-types = { version = "0.2", features = ["derive", "with-chrono-0_4"] }
+serde = { version = "1", features = ["derive", "rc"] }
+simple_logger = { version = "5", features = [
+    "colors",
+], default-features = false }
+time = { version = "0.3", features = ["macros", "parsing"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+url = "2"
+moka = { version = "0.12", features = ["future"] }
+jemallocator = "0.5"
+once_cell = "1.21.3"
+rustc-hash = "2"
+tokio-cron-scheduler = "0.15.1"
+rdkafka = { version = "0.36", features = ["tokio"] }
+serde_json = "1"
+
+[[bin]]
+name = "runic"
+path = "bin/runic.rs"

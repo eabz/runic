@@ -1,0 +1,134 @@
+services:
+  # ============================================
+  # PostgreSQL - State Database
+  # ============================================
+  postgres:
+    image: postgres:18-alpine
+    container_name: runic-postgres
+    environment:
+      POSTGRES_USER: runic
+      POSTGRES_PASSWORD: runic_secret_password
+      POSTGRES_DB: indexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema/postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U runic -d indexer" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      - runic-network
+    restart: unless-stopped
+
+  # ============================================
+  # Grafana - Monitoring & Visualization
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: runic-grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Security
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: Q3ViR4fiQTOrGByxHAxpCe9iuL3Fe4uF
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Plugins
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_SERVER_ENABLE_GZIP: "true"
+      GF_DATABASE_WAL: "true"
+      # Disable analytics
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      # Logging
+      GF_LOG_MODE: console
+      GF_LOG_LEVEL: warn
+      # Simplified UI - Hide unnecessary elements
+      GF_EXPLORE_ENABLED: "false"
+      GF_ALERTING_ENABLED: "false"
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_HELP_ENABLED: "false"
+      GF_PROFILE_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/runic.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      - runic-network
+    restart: unless-stopped
+
+  # ============================================
+  # Runic Indexer
+  # ============================================
+  runic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: runic-indexer:latest
+    container_name: runic-indexer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+      - ./schema:/app/schema:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pgrep -x runic || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "5"
+    networks:
+      - runic-network
+    restart: unless-stopped
+
+# ============================================
+# Volumes (Docker managed, persistent)
+# ============================================
+volumes:
+  postgres_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  runic-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1500

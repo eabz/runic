@@ -1,0 +1,47 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: ClickHouse
+    orgId: 1
+  - name: ScyllaDB
+    orgId: 1
+  - name: PostgreSQL
+    orgId: 1
+
+datasources:
+  # ClickHouse Data Source
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    uid: clickhouse
+    orgId: 1
+    access: proxy
+    isDefault: true
+    editable: true
+    jsonData:
+      defaultDatabase: indexer
+      host: jbzw61kexd.eu-central-1.aws.clickhouse.cloud
+      port: 9440
+      protocol: native
+      secure: true
+      username: default
+      tlsSkipVerify: false
+    secureJsonData:
+      password: BCPY8~mpdbrqc
+
+  # PostgreSQL Data Source (for state data)
+  - name: PostgreSQL
+    type: postgres
+    uid: postgres
+    orgId: 1
+    access: proxy
+    editable: true
+    url: postgres:5432
+    user: runic
+    jsonData:
+      database: indexer
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: runic_secret_password
