@@ -1,21 +1,41 @@
 services:
   # ============================================
+  # PgAdmin - Database Management
+  # ============================================
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    user: root
+    ports:
+      - "8080:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: contact@nimu.fun
+      PGADMIN_DEFAULT_PASSWORD: password
+    depends_on:
+      - postgres
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json
+    networks:
+      - runic
+    restart: unless-stopped
+
+  # ============================================
   # PostgreSQL - State Database
   # ============================================
   postgres:
     image: postgres:18-alpine
-    container_name: runic-postgres
+    container_name: postgres
     environment:
       POSTGRES_USER: runic
-      POSTGRES_PASSWORD: runic_secret_password
+      POSTGRES_PASSWORD: password
       POSTGRES_DB: indexer
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./database:/var/lib/postgresql/data
       - ./schema/postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U runic -d indexer" ]
+      test: ["CMD-SHELL", "pg_isready -U runic -d indexer"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,7 +46,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      - runic-network
+      - runic
     restart: unless-stopped
 
   # ============================================
@@ -34,7 +54,7 @@ services:
   # ============================================
   grafana:
     image: grafana/grafana:latest
-    container_name: runic-grafana
+    container_name: grafana
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,7 +91,11 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
-      test: [ "CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1" ]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:3000/api/health || exit 1",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -82,7 +106,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      - runic-network
+      - runic
     restart: unless-stopped
 
   # ============================================
@@ -93,7 +117,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: runic-indexer:latest
-    container_name: runic-indexer
+    container_name: indexer
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,7 +125,7 @@ services:
       - ./config.docker.yaml:/app/config.yaml:ro
       - ./schema:/app/schema:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pgrep -x runic || exit 1" ]
+      test: ["CMD-SHELL", "pgrep -x runic || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -112,15 +136,13 @@ services:
         max-size: "200m"
         max-file: "5"
     networks:
-      - runic-network
+      - runic
     restart: unless-stopped
 
 # ============================================
 # Volumes (Docker managed, persistent)
 # ============================================
 volumes:
-  postgres_data:
-    driver: local
   grafana_data:
     driver: local
 
@@ -128,7 +150,7 @@ volumes:
 # Networks
 # ============================================
 networks:
-  runic-network:
+  runic:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: 1500

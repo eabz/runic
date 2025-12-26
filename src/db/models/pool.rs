@@ -39,7 +39,7 @@ pub enum QuoteTokenPriority {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Pool {
     // Primary key
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub address: String,
 
     // Token pair metadata (denormalized)
@@ -47,8 +47,8 @@ pub struct Pool {
     pub token1: String,
     pub token0_symbol: String,
     pub token1_symbol: String,
-    pub token0_decimals: i32,
-    pub token1_decimals: i32,
+    pub token0_decimals: u8,
+    pub token1_decimals: u8,
 
     // Price routing (quote token detection)
     pub base_token: String,
@@ -59,18 +59,18 @@ pub struct Pool {
     // Protocol metadata
     pub protocol: Option<String>,
     pub protocol_version: Option<String>,
-    pub factory: String,
+    pub factory: Option<String>,
     /// Current fee (may change for V4 dynamic fee pools)
-    pub fee: Option<i32>,
+    pub fee: Option<u32>,
     /// Initial fee at pool creation (immutable, used for V4 pool ID calculation)
     /// For V2/V3: same as fee. For V4: the PoolKey fee from Initialize event.
-    pub initial_fee: Option<i32>,
+    pub initial_fee: Option<u32>,
     pub hook_address: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 
     // Last update reference
-    pub block_number: i64,
-    pub tx_hash: String,
+    pub block_number: Option<u64>,
+    pub tx_hash: Option<String>,
 
     // V2 state: reserves
     pub reserve0: Option<String>,
@@ -97,10 +97,10 @@ pub struct Pool {
     pub price_change_24h: Option<f64>,
     pub price_change_7d: Option<f64>,
     pub volume_24h: Option<f64>,
-    pub swaps_24h: Option<i64>,
+    pub swaps_24h: Option<u64>,
 
     // Lifetime stats
-    pub total_swaps: Option<i64>,
+    pub total_swaps: Option<u64>,
     pub total_volume_usd: Option<f64>,
 
     // TVL
@@ -113,7 +113,7 @@ pub struct Pool {
 
 impl Pool {
     pub fn from_v2_pool_created(
-        chain_id: i64,
+        chain_id: u64,
         factory: String,
         event: v2::PairCreated,
         token0: &Token,
@@ -141,15 +141,15 @@ impl Pool {
             initial_fee: Some(3000),
             protocol: None,
             protocol_version: Some(String::from("v2")),
-            factory,
+            factory: Some(factory),
             hook_address: None,
             created_at: DateTime::from_timestamp_secs(timestamp as i64),
             base_token,
             quote_token,
             is_inverted,
             quote_token_priority,
-            block_number: block_number as i64,
-            tx_hash,
+            block_number: Some(block_number),
+            tx_hash: Some(tx_hash),
             reserve0: None,
             reserve1: None,
             reserve0_adjusted: None,
@@ -175,7 +175,7 @@ impl Pool {
     }
 
     pub fn from_v3_pool_created(
-        chain_id: i64,
+        chain_id: u64,
         factory: String,
         event: v3::PoolCreated,
         token0: &Token,
@@ -199,19 +199,19 @@ impl Pool {
             token1_symbol: token1.symbol.clone(),
             token0_decimals: token0.decimals,
             token1_decimals: token1.decimals,
-            fee: Some(event.fee.as_limbs()[0] as i32),
-            initial_fee: Some(event.fee.as_limbs()[0] as i32),
+            fee: Some(event.fee.as_limbs()[0] as u32),
+            initial_fee: Some(event.fee.as_limbs()[0] as u32),
             protocol: None,
             protocol_version: Some(String::from("v3")),
-            factory,
+            factory: Some(factory),
             hook_address: None,
             created_at: DateTime::from_timestamp_secs(timestamp as i64),
             base_token,
             quote_token,
             is_inverted,
             quote_token_priority,
-            block_number: block_number as i64,
-            tx_hash,
+            block_number: Some(block_number),
+            tx_hash: Some(tx_hash),
             reserve0: None,
             reserve1: None,
             reserve0_adjusted: Some(0.0), // Initialize with 0 for V3 balance tracking
@@ -237,7 +237,7 @@ impl Pool {
     }
 
     pub fn from_v4_pool_created(
-        chain_id: i64,
+        chain_id: u64,
         factory: String,
         event: v4::Initialize,
         token0: &Token,
@@ -288,19 +288,19 @@ impl Pool {
             token1_symbol: token1.symbol.clone(),
             token0_decimals: token0.decimals,
             token1_decimals: token1.decimals,
-            fee: Some(event.fee.as_limbs()[0] as i32),
-            initial_fee: Some(event.fee.as_limbs()[0] as i32),
+            fee: Some(event.fee.as_limbs()[0] as u32),
+            initial_fee: Some(event.fee.as_limbs()[0] as u32),
             protocol: None,
             protocol_version: Some(String::from("v4")),
-            factory,
+            factory: Some(factory),
             hook_address: Some(hex_encode(event.hooks.as_slice())),
             created_at: DateTime::from_timestamp_secs(timestamp as i64),
             base_token,
             quote_token,
             is_inverted,
             quote_token_priority,
-            block_number: block_number as i64,
-            tx_hash,
+            block_number: Some(block_number),
+            tx_hash: Some(tx_hash),
             reserve0: None,
             reserve1: None,
             reserve0_adjusted: Some(0.0), // Initialize with 0 for V4 balance tracking
@@ -327,10 +327,10 @@ impl Pool {
 
     pub fn update_from_event(&mut self, event: &Event) {
         // Only update if the event block number is greater than or equal to the pool's last block number
-        if event.block_number as i64 >= self.block_number {
-            self.block_number = event.block_number as i64;
+        if event.block_number >= self.block_number.unwrap_or(0) {
+            self.block_number = Some(event.block_number);
             self.updated_at = DateTime::from_timestamp(event.timestamp.unix_timestamp(), 0);
-            self.tx_hash = event.tx_hash.clone();
+            self.tx_hash = Some(event.tx_hash.clone());
 
             // 1. Stats
             if event.event_type == "swap" {
@@ -441,8 +441,8 @@ impl Pool {
     ///
     /// This sets reserves and calculates price from the reserve ratio.
     pub fn update_v2_sync(&mut self, event: &v2::Sync, block_number: u64, timestamp: u64) {
-        if block_number as i64 >= self.block_number {
-            self.block_number = block_number as i64;
+        if block_number >= self.block_number.unwrap_or(0) {
+            self.block_number = Some(block_number);
             self.updated_at = DateTime::from_timestamp(timestamp as i64, 0);
 
             // Convert raw event data to reserves
@@ -487,8 +487,8 @@ impl Pool {
         block_number: u64,
         timestamp: u64,
     ) {
-        if block_number as i64 >= self.block_number {
-            self.block_number = block_number as i64;
+        if block_number >= self.block_number.unwrap_or(0) {
+            self.block_number = Some(block_number);
             self.updated_at = DateTime::from_timestamp(timestamp as i64, 0);
 
             // Convert raw event data to pool state
@@ -521,7 +521,7 @@ impl Pool {
 
     /// Update V4 pool fee from swap event (dynamic fees).
     pub fn update_v4_fee(&mut self, event: &v4::Swap) {
-        self.fee = Some(event.fee.as_limbs()[0] as i32);
+        self.fee = Some(event.fee.as_limbs()[0] as u32);
     }
 }
 

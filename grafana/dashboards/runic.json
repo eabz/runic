@@ -265,12 +265,12 @@
           },
           "format": 1,
           "queryType": "sql",
-          "rawSql": "SELECT sum(transfer_count) FROM indexer.hourly_transfer_stats WHERE ($chain_id = 0 OR chain_id = $chain_id) AND hour >= now() - INTERVAL 24 HOUR",
+          "rawSql": "SELECT count() FROM indexer.supply_events WHERE ($chain_id = 0 OR chain_id = $chain_id) AND timestamp >= now() - INTERVAL 24 HOUR",
           "refId": "A"
         }
       ],
       "timeFrom": "24h",
-      "title": "\ud83d\udcb8 Transfers/24h",
+      "title": "\ud83d\udcb8 Supply Events/24h",
       "type": "stat"
     },
     {
@@ -388,7 +388,7 @@
           },
           "format": 1,
           "queryType": "sql",
-          "rawSql": "SELECT sum(token_count) FROM indexer.global_token_stats FINAL WHERE ($chain_id = 0 OR chain_id = $chain_id)",
+          "rawSql": "SELECT uniqMerge(unique_tokens) FROM indexer.hourly_new_pools_stats WHERE ($chain_id = 0 OR chain_id = $chain_id)",
           "refId": "A"
         }
       ],
@@ -728,12 +728,12 @@
           },
           "format": 1,
           "queryType": "sql",
-          "rawSql": "SELECT hour as time, sum(transfer_count) as transfers FROM indexer.hourly_transfer_stats WHERE ($chain_id = 0 OR chain_id = $chain_id) AND hour >= now() - INTERVAL 24 HOUR GROUP BY hour ORDER BY hour",
+          "rawSql": "SELECT toStartOfHour(timestamp) as time, count() as transfers FROM indexer.supply_events WHERE ($chain_id = 0 OR chain_id = $chain_id) AND timestamp >= now() - INTERVAL 24 HOUR GROUP BY time ORDER BY time",
           "refId": "A"
         }
       ],
       "timeFrom": "24h",
-      "title": "\ud83d\udcb8 Transfers per Hour (24h)",
+      "title": "\ud83d\udcb8 Supply Events per Hour (24h)",
       "type": "timeseries"
     },
     {
@@ -935,8 +935,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse"
+        "type": "postgres",
+        "uid": "postgres"
       },
       "fieldConfig": {
         "defaults": {
@@ -982,12 +982,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse"
+            "type": "postgres",
+            "uid": "postgres"
           },
-          "format": 1,
-          "queryType": "sql",
-          "rawSql": "SELECT sum(token_count) FROM indexer.global_token_stats FINAL WHERE ($chain_id = 0 OR chain_id = $chain_id)",
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(token_count), 0) FROM indexer.mv_token_summary WHERE ($chain_id = 0 OR chain_id = $chain_id)",
           "refId": "A"
         }
       ],
@@ -2034,7 +2035,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT chain_id, address, protocol, token0_symbol, token1_symbol, tvl_usd, volume_24h, price_usd, price_change_24h FROM indexer.pools WHERE ('$pool_search' = '' OR address = '$pool_search') AND ($chain_id = 0 OR chain_id = $chain_id) ORDER BY volume_24h DESC NULLS LAST LIMIT 50",
+          "rawSql": "SELECT chain_id, address, token0, token1, token0_symbol, token1_symbol, token0_decimals, token1_decimals, base_token, quote_token, is_inverted, quote_token_priority, protocol, protocol_version, factory, fee, initial_fee, hook_address, created_at, block_number, tx_hash, reserve0, reserve1, reserve0_adjusted, reserve1_adjusted, sqrt_price_x96, tick, tick_spacing, liquidity, price, token0_price, token1_price, price_usd, price_change_24h, price_change_7d, volume_24h, swaps_24h, total_swaps, total_volume_usd, tvl_usd, last_swap_at, updated_at FROM indexer.pools WHERE ('$pool_search' = '' OR address = '$pool_search') AND ($chain_id = 0 OR chain_id = $chain_id) ORDER BY volume_24h DESC NULLS LAST LIMIT 50",
           "refId": "A"
         }
       ],
@@ -2266,7 +2267,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT chain_id, address, symbol, name, decimals, price_usd, volume_24h, market_cap_usd, price_change_24h FROM indexer.tokens WHERE ('$token_search' = '' OR address = '$token_search') AND ($chain_id = 0 OR chain_id = $chain_id) ORDER BY price_usd DESC NULLS LAST LIMIT 50",
+          "rawSql": "SELECT chain_id, address, symbol, name, decimals, price_usd, price_updated_at, price_change_24h, price_change_7d, logo_url, banner_url, website, twitter, telegram, discord, volume_24h, swaps_24h, total_swaps, total_volume_usd, pool_count, circulating_supply, market_cap_usd, first_seen_block, last_activity_at, updated_at FROM indexer.tokens WHERE ('$token_search' = '' OR address = '$token_search') AND ($chain_id = 0 OR chain_id = $chain_id) ORDER BY price_usd DESC NULLS LAST LIMIT 50",
           "refId": "A"
         }
       ],

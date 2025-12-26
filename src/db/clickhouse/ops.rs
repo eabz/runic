@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::{
     clickhouse::client::BatchIngestor,
-    models::{Event, NewPool, Pool, PoolSnapshot, Token, TokenSearch, TokenSnapshot, Transfer},
+    models::{Event, NewPool, Pool, PoolSnapshot, SupplyEvent, Token, TokenSnapshot},
 };
 
 /// Batch of data from the indexer to be inserted into ClickHouse
@@ -13,9 +13,9 @@ use crate::db::{
 #[derive(Debug, Clone)]
 pub struct BatchDataMessage {
     /// Chain ID for this batch (used for Redpanda topic partitioning)
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub events: Vec<Event>,
-    pub transfers: Vec<Transfer>,
+    pub supply_events: Vec<SupplyEvent>,
     pub new_pools: Vec<NewPool>,
     /// Updated pool states (for Redpanda, not stored in ClickHouse)
     pub pools: Vec<Pool>,
@@ -30,19 +30,11 @@ pub struct SnapshotMessage {
     pub token_snapshots: Vec<TokenSnapshot>,
 }
 
-/// Token search entries (populated when new tokens are discovered)
-#[derive(Debug, Clone)]
-pub struct TokenSearchMessage {
-    pub tokens: Vec<TokenSearch>,
-}
-
 pub enum IngestMessage {
     /// Real-time batch data from indexer
     BatchData(BatchDataMessage),
     /// Periodic snapshots from background jobs
     Snapshots(SnapshotMessage),
-    /// Token search index updates
-    TokenSearch(TokenSearchMessage),
     /// Shutdown signal
     Shutdown,
 }
@@ -72,10 +64,10 @@ impl BatchIngestor {
                                     .context("Failed to write event")?;
                             }
 
-                            // Write transfers to inserter
-                            for transfer in &batch.transfers {
-                                self.transfer_inserter.write(transfer).await
-                                    .context("Failed to write transfer")?;
+                            // Write supply events
+                            for supply_event in &batch.supply_events {
+                                self.supply_event_inserter.write(supply_event).await
+                                    .context("Failed to write supply event")?;
                             }
 
                             // Write new pools to inserter
@@ -101,14 +93,6 @@ impl BatchIngestor {
                             for snapshot in &snapshots.token_snapshots {
                                 self.token_snapshot_inserter.write(snapshot).await
                                     .context("Failed to write token snapshot")?;
-                            }
-
-                            self.commit_all().await?;
-                        }
-                        Some(IngestMessage::TokenSearch(search)) => {
-                            for token in &search.tokens {
-                                self.token_search_inserter.write(token).await
-                                    .context("Failed to write token search")?;
                             }
 
                             self.commit_all().await?;
@@ -141,11 +125,10 @@ impl BatchIngestor {
     fn min_time_left(&mut self) -> Option<Duration> {
         [
             self.event_inserter.time_left(),
-            self.transfer_inserter.time_left(),
+            self.supply_event_inserter.time_left(),
             self.new_pool_inserter.time_left(),
             self.pool_snapshot_inserter.time_left(),
             self.token_snapshot_inserter.time_left(),
-            self.token_search_inserter.time_left(),
         ]
         .into_iter()
         .flatten()
@@ -155,34 +138,31 @@ impl BatchIngestor {
     /// Commit all inserters - checks thresholds and flushes if needed
     async fn commit_all(&mut self) -> anyhow::Result<()> {
         let event_stats = self.event_inserter.commit().await?;
-        let transfer_stats = self.transfer_inserter.commit().await?;
+        let supply_event_stats = self.supply_event_inserter.commit().await?;
         let new_pool_stats = self.new_pool_inserter.commit().await?;
         let pool_snapshot_stats = self.pool_snapshot_inserter.commit().await?;
         let token_snapshot_stats = self.token_snapshot_inserter.commit().await?;
-        let token_search_stats = self.token_search_inserter.commit().await?;
 
         // Log only if any data was actually committed (transactions > 0)
         let total_rows = event_stats.rows
-            + transfer_stats.rows
+            + supply_event_stats.rows
             + new_pool_stats.rows
             + pool_snapshot_stats.rows
-            + token_snapshot_stats.rows
-            + token_search_stats.rows;
+            + token_snapshot_stats.rows;
 
         let total_transactions = event_stats.transactions
-            + transfer_stats.transactions
+            + supply_event_stats.transactions
             + new_pool_stats.transactions
             + pool_snapshot_stats.transactions
-            + token_snapshot_stats.transactions
-            + token_search_stats.transactions;
+            + token_snapshot_stats.transactions;
 
         if total_transactions > 0 {
             let mut parts = Vec::new();
             if event_stats.rows > 0 {
                 parts.push(format!("Events:{}", event_stats.rows));
             }
-            if transfer_stats.rows > 0 {
-                parts.push(format!("Transfers:{}", transfer_stats.rows));
+            if supply_event_stats.rows > 0 {
+                parts.push(format!("SupplyEvents:{}", supply_event_stats.rows));
             }
             if new_pool_stats.rows > 0 {
                 parts.push(format!("NewPools:{}", new_pool_stats.rows));
@@ -192,9 +172,6 @@ impl BatchIngestor {
             }
             if token_snapshot_stats.rows > 0 {
                 parts.push(format!("TokenSnaps:{}", token_snapshot_stats.rows));
-            }
-            if token_search_stats.rows > 0 {
-                parts.push(format!("TokenSearch:{}", token_search_stats.rows));
             }
 
             info!(
@@ -213,11 +190,10 @@ impl BatchIngestor {
     async fn end_all(&mut self) -> anyhow::Result<()> {
         // Force commit any remaining data
         let _ = self.event_inserter.force_commit().await;
-        let _ = self.transfer_inserter.force_commit().await;
+        let _ = self.supply_event_inserter.force_commit().await;
         let _ = self.new_pool_inserter.force_commit().await;
         let _ = self.pool_snapshot_inserter.force_commit().await;
         let _ = self.token_snapshot_inserter.force_commit().await;
-        let _ = self.token_search_inserter.force_commit().await;
 
         info!("[{}] All inserters flushed", self.label);
         Ok(())

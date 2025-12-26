@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 /// Used to resume indexing after restarts without missing or duplicating data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncCheckpoint {
-    pub chain_id: i64,
-    pub last_indexed_block: i64,
+    pub chain_id: u64,
+    pub last_indexed_block: u64,
     pub updated_at: DateTime<Utc>,
 }
 
 impl SyncCheckpoint {
-    pub fn new(chain_id: i64, last_indexed_block: i64) -> Self {
+    pub fn new(chain_id: u64, last_indexed_block: u64) -> Self {
         Self {
             chain_id,
             last_indexed_block,

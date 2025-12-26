@@ -10,8 +10,9 @@ use alloy::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    abis::{transfer, v2, v3, v4},
-    utils::hex_encode,
+    abis::{erc20, v2, v3, v4},
+    db::models::ChainTokens,
+    utils::{hex_encode, ZERO_ADDRESS},
 };
 
 /// Pre-parsed log data to avoid re-parsing in multiple passes.
@@ -44,31 +45,6 @@ pub enum ParsedLog {
         event: v3::Initialize,
         log_address: String,
         block_number: u64,
-        block_timestamp: u64,
-    },
-    // Transfer events
-    Transfer {
-        event: transfer::Transfer,
-        log_address: String,
-        block_number: u64,
-        log_index: u32,
-        tx_hash: String,
-        block_timestamp: u64,
-    },
-    WethDeposit {
-        event: transfer::Deposit,
-        log_address: String,
-        block_number: u64,
-        log_index: u32,
-        tx_hash: String,
-        block_timestamp: u64,
-    },
-    WethWithdrawal {
-        event: transfer::Withdrawal,
-        log_address: String,
-        block_number: u64,
-        log_index: u32,
-        tx_hash: String,
         block_timestamp: u64,
     },
     // Liquidity events
@@ -149,6 +125,32 @@ pub enum ParsedLog {
         tx_hash: String,
         block_timestamp: u64,
     },
+    // Supply events
+    SupplyTransfer {
+        event: erc20::Transfer,
+        log_address: String,
+        block_number: u64,
+        log_index: u32,
+        tx_hash: String,
+        block_timestamp: u64,
+        is_mint: bool, // true = mint, false = burn
+    },
+    SupplyDeposit {
+        event: erc20::Deposit,
+        log_address: String,
+        block_number: u64,
+        log_index: u32,
+        tx_hash: String,
+        block_timestamp: u64,
+    },
+    SupplyWithdrawal {
+        event: erc20::Withdrawal,
+        log_address: String,
+        block_number: u64,
+        log_index: u32,
+        tx_hash: String,
+        block_timestamp: u64,
+    },
 }
 
 /// Result of parsing logs from a HyperSync response.
@@ -171,6 +173,7 @@ pub struct ParseResult {
 pub fn parse_logs(
     logs: impl Iterator<Item = hypersync_client::simple_types::Log>,
     block_timestamps: &FxHashMap<u64, u64>,
+    chain_tokens: &ChainTokens,
     log_count_estimate: usize,
 ) -> ParseResult {
     let mut parsed_logs: Vec<ParsedLog> = Vec::with_capacity(log_count_estimate);
@@ -228,44 +231,6 @@ pub fn parse_logs(
             .unwrap_or_default();
 
         match topic0 {
-            // Transfer events
-            t if t == &transfer::Transfer::SIGNATURE_HASH.0 => {
-                token_addresses.push(log_address.clone());
-                if let Ok(event) = transfer::Transfer::decode_log_data(&log_data) {
-                    parsed_logs.push(ParsedLog::Transfer {
-                        event,
-                        log_address,
-                        block_number,
-                        log_index,
-                        tx_hash,
-                        block_timestamp,
-                    });
-                }
-            },
-            t if t == &transfer::Deposit::SIGNATURE_HASH.0 => {
-                if let Ok(event) = transfer::Deposit::decode_log_data(&log_data) {
-                    parsed_logs.push(ParsedLog::WethDeposit {
-                        event,
-                        log_address,
-                        block_number,
-                        log_index,
-                        tx_hash,
-                        block_timestamp,
-                    });
-                }
-            },
-            t if t == &transfer::Withdrawal::SIGNATURE_HASH.0 => {
-                if let Ok(event) = transfer::Withdrawal::decode_log_data(&log_data) {
-                    parsed_logs.push(ParsedLog::WethWithdrawal {
-                        event,
-                        log_address,
-                        block_number,
-                        log_index,
-                        tx_hash,
-                        block_timestamp,
-                    });
-                }
-            },
             // Pool creation events
             t if t == &v2::PairCreated::SIGNATURE_HASH.0 => {
                 if let Ok(event) = v2::PairCreated::decode_log_data(&log_data) {
@@ -443,6 +408,63 @@ pub fn parse_logs(
                         tx_hash,
                         block_timestamp,
                     });
+                }
+            },
+            // Supply events
+            t if t == &erc20::Transfer::SIGNATURE_HASH.0 => {
+                if let Ok(event) = erc20::Transfer::decode_log_data(&log_data) {
+                    let from_zero = hex_encode(event.from.as_slice()) == ZERO_ADDRESS;
+                    let to_zero = hex_encode(event.to.as_slice()) == ZERO_ADDRESS;
+
+                    if from_zero || to_zero {
+                        token_addresses.push(log_address.clone());
+
+                        let supply = ParsedLog::SupplyTransfer {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                            is_mint: from_zero,
+                        };
+
+                        parsed_logs.push(supply);
+                    }
+                }
+            },
+            t if t == &erc20::Deposit::SIGNATURE_HASH.0 => {
+                // Deposit = Mint for Wrapped Native
+                if chain_tokens.is_wrapped_native(&log_address) {
+                    if let Ok(event) = erc20::Deposit::decode_log_data(&log_data) {
+                        let supply = ParsedLog::SupplyDeposit {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                        };
+
+                        parsed_logs.push(supply);
+                    }
+                }
+            },
+            t if t == &erc20::Withdrawal::SIGNATURE_HASH.0 => {
+                // Withdrawal = Burn for Wrapped Native
+                if chain_tokens.is_wrapped_native(&log_address) {
+                    if let Ok(event) = erc20::Withdrawal::decode_log_data(&log_data) {
+                        let supply = ParsedLog::SupplyWithdrawal {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                        };
+
+                        parsed_logs.push(supply);
+                    }
                 }
             },
             _ => {},

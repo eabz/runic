@@ -43,7 +43,7 @@ pub use tick_math::calculate_mint_amounts;
 
 // Validation utilities
 pub use validation::{
-    has_sufficient_native_liquidity, is_suspicious_volume_to_tvl, validate_price_against_volume,
-    validate_price_ratio, validate_usd_price, validate_usd_price_relative, validate_usd_tvl,
-    validate_usd_volume, MAX_PRICE_RATIO, MIN_NATIVE_LIQUIDITY_USD,
+    is_suspicious_volume_to_tvl, validate_price_against_volume, validate_price_ratio,
+    validate_usd_price, validate_usd_price_relative, validate_usd_tvl, validate_usd_volume,
+    MAX_PRICE_RATIO,
 };

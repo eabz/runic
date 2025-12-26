@@ -1,0 +1,13 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "NIMU Postgres",
+            "Group": "Servers",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "indexer",
+            "Username": "runic",
+            "SSLMode": "prefer"
+        }
+    }
+}

@@ -275,79 +275,7 @@ CREATE TABLE IF NOT EXISTS indexer.token_snapshots (
 PARTITION BY toYYYYMM(time)
 ORDER BY (chain_id, token_address, time);
 
-CREATE TABLE IF NOT EXISTS indexer.transfers (
-    chain_id        UInt64 CODEC(Delta, LZ4),
-    block_number    UInt64 CODEC(Delta, ZSTD(1)),
-    tx_hash         String CODEC(ZSTD(1)),
-    log_index       UInt32 CODEC(Delta, LZ4),
-    timestamp       DateTime CODEC(DoubleDelta, ZSTD(1)),
-    token_address   String CODEC(ZSTD(1)),
-    from_address    String CODEC(ZSTD(1)),
-    to_address      String CODEC(ZSTD(1)),
-    amount          UInt256 CODEC(ZSTD(1)),
-    amount_adjusted Float64 DEFAULT 0 CODEC(Gorilla, ZSTD(1)),
-    
-    PROJECTION by_sender (
-        SELECT * ORDER BY (chain_id, from_address, timestamp, tx_hash, log_index)
-    ),
-    PROJECTION by_receiver (
-        SELECT * ORDER BY (chain_id, to_address, timestamp, tx_hash, log_index)
-    ),
-    
-    INDEX idx_block block_number TYPE minmax GRANULARITY 4
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(timestamp)
-ORDER BY (chain_id, token_address, block_number, tx_hash, log_index);
 
-CREATE TABLE IF NOT EXISTS indexer.transfers_state (
-    chain_id        UInt64 CODEC(Delta, LZ4),
-    owner           String CODEC(ZSTD(1)),
-    token_address   String CODEC(ZSTD(1)),
-    value_in        UInt256 CODEC(ZSTD(1)),
-    value_out       UInt256 CODEC(ZSTD(1)),
-    tx_count        UInt64 CODEC(Delta, LZ4),
-    last_updated    SimpleAggregateFunction(max, DateTime)
-) ENGINE = SummingMergeTree()
-ORDER BY (chain_id, owner, token_address);
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS indexer.mv_transfers_to_state 
-TO indexer.transfers_state AS
-SELECT
-    chain_id,
-    to_address AS owner,
-    token_address,
-    amount AS value_in,
-    toUInt256(0) AS value_out,
-    toUInt64(1) AS tx_count,
-    timestamp AS last_updated
-FROM indexer.transfers
-WHERE to_address != '0x0000000000000000000000000000000000000000'
-
-UNION ALL
-
-SELECT
-    chain_id,
-    from_address AS owner,
-    token_address,
-    toUInt256(0) AS value_in,
-    amount AS value_out,
-    toUInt64(1) AS tx_count,
-    timestamp AS last_updated
-FROM indexer.transfers
-WHERE from_address != '0x0000000000000000000000000000000000000000';
-
-CREATE TABLE IF NOT EXISTS indexer.token_search (
-    chain_id        UInt64 CODEC(Delta, LZ4),
-    address         String CODEC(ZSTD(1)),
-    symbol          String CODEC(ZSTD(1)),
-    name            String CODEC(ZSTD(1)),
-    decimals        UInt8 DEFAULT 18 CODEC(T64, LZ4),
-    INDEX idx_symbol symbol TYPE tokenbf_v1(256, 2, 0) GRANULARITY 1,
-    INDEX idx_name name TYPE tokenbf_v1(256, 2, 0) GRANULARITY 1,
-    INDEX idx_symbol_ngram symbol TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 1,
-    INDEX idx_name_ngram name TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 1
-) ENGINE = MergeTree()
-ORDER BY (chain_id, address);
 
 CREATE TABLE IF NOT EXISTS indexer.trader_stats (
     chain_id            UInt64 CODEC(Delta, LZ4),
@@ -453,36 +381,7 @@ SELECT
 FROM indexer.events
 GROUP BY chain_id, hour;
 
--- Pre-aggregated hourly transfer stats
-CREATE TABLE IF NOT EXISTS indexer.hourly_transfer_stats (
-    chain_id            UInt64 CODEC(Delta, LZ4),
-    hour                DateTime CODEC(DoubleDelta, ZSTD(1)),
-    transfer_count      SimpleAggregateFunction(sum, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMM(hour)
-ORDER BY (chain_id, hour);
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS indexer.mv_hourly_transfer_stats 
-TO indexer.hourly_transfer_stats AS
-SELECT
-    chain_id,
-    toStartOfHour(timestamp) AS hour,
-    toUInt64(1) AS transfer_count
-FROM indexer.transfers;
-
--- Pre-aggregated global token counts (for "Tokens Indexed" / "Total Tokens" panels)
-CREATE TABLE IF NOT EXISTS indexer.global_token_stats (
-    chain_id            UInt64 CODEC(Delta, LZ4),
-    token_count         SimpleAggregateFunction(sum, UInt64)
-) ENGINE = AggregatingMergeTree()
-ORDER BY chain_id;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS indexer.mv_global_token_stats 
-TO indexer.global_token_stats AS
-SELECT
-    chain_id,
-    toUInt64(1) AS token_count
-FROM indexer.token_search;
 
 -- Pre-aggregated global pool counts (for "New Pools (All Time)" panel)
 CREATE TABLE IF NOT EXISTS indexer.global_pool_stats (
@@ -518,12 +417,30 @@ SELECT
 FROM indexer.new_pools
 GROUP BY chain_id, hour;
 
--- Aggregated token supply stats (mints - burns)
+-- Supply Events (Mints and Burns)
+CREATE TABLE IF NOT EXISTS indexer.supply_events (
+    chain_id            UInt64 CODEC(Delta, LZ4),
+    block_number        UInt64 CODEC(Delta, ZSTD(1)),
+    timestamp           DateTime CODEC(DoubleDelta, ZSTD(1)),
+    tx_hash             String CODEC(ZSTD(1)),
+    log_index           UInt32 CODEC(Delta, LZ4),
+    token_address       String CODEC(ZSTD(1)),
+    type                LowCardinality(String), -- 'mint' or 'burn'
+    amount              UInt256 CODEC(ZSTD(1)),
+    amount_adjusted     Float64 DEFAULT 0 CODEC(Gorilla, ZSTD(1)),
+    
+    INDEX idx_token token_address TYPE minmax GRANULARITY 4
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (chain_id, token_address, timestamp);
+
+-- Aggregated Token Supplies
 CREATE TABLE IF NOT EXISTS indexer.token_supplies (
     chain_id            UInt64 CODEC(Delta, LZ4),
     token_address       String CODEC(ZSTD(1)),
-    minted              SimpleAggregateFunction(sum, UInt256),
-    burnt               SimpleAggregateFunction(sum, UInt256)
+    total_supply        SimpleAggregateFunction(sum, Float64), -- Utilizing adjusted amounts for easier aggregation
+    total_minted        SimpleAggregateFunction(sum, Float64),
+    total_burnt         SimpleAggregateFunction(sum, Float64)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (chain_id, token_address);
 
@@ -532,9 +449,10 @@ TO indexer.token_supplies AS
 SELECT
     chain_id,
     token_address,
-    sumIf(amount, from_address = '0x0000000000000000000000000000000000000000') AS minted,
-    sumIf(amount, to_address = '0x0000000000000000000000000000000000000000') AS burnt
-FROM indexer.transfers
-WHERE from_address = '0x0000000000000000000000000000000000000000'
-   OR to_address = '0x0000000000000000000000000000000000000000'
+    sumIf(amount_adjusted, type = 'mint') - sumIf(amount_adjusted, type = 'burn') AS total_supply,
+    sumIf(amount_adjusted, type = 'mint') AS total_minted,
+    sumIf(amount_adjusted, type = 'burn') AS total_burnt
+FROM indexer.supply_events
 GROUP BY chain_id, token_address;
+
+

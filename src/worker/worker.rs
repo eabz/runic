@@ -15,16 +15,21 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    abis::{transfer, v2, v3, v4},
+    abis::{erc20, v2, v3, v4},
     db::{
+        clickhouse::ops::BatchDataMessage,
         models::{
-            ChainTokens, DatabaseChain, Event, NativeTokenPrice, NewPool, Pool, PoolByToken,
-            SyncCheckpoint, Transfer,
+            ChainTokens, DatabaseChain, Event, NativeTokenPrice, NewPool, Pool, SupplyEvent,
+            SyncCheckpoint,
         },
-        BatchDataMessage, IngestMessage,
+        IngestMessage,
     },
     utils::{compute_v4_pool_id, compute_v4_pool_id_from_stored, hex_encode},
-    worker::{parse_logs, ParsedLog, PriceResolver, TokenFetcher},
+    worker::{
+        parser::{self, ParsedLog},
+        price_resolver::PriceResolver,
+        token_fetcher::TokenFetcher,
+    },
     Database,
 };
 
@@ -45,13 +50,14 @@ const STREAM_RECV_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ChainWorker {
     historical_sender: mpsc::Sender<IngestMessage>,
     live_sender: mpsc::Sender<IngestMessage>,
-    chain_id: i64,
+    chain_id: u64,
     client: Arc<Client>,
     db: Arc<Database>,
     filters: LogFilter,
     chain_tokens: Arc<ChainTokens>,
     token_fetcher: TokenFetcher,
     tip_poll_interval: Duration,
+    factories: Vec<String>,
 }
 
 /// Mutable state tracked during batch processing.
@@ -90,12 +96,8 @@ impl ChainWorker {
         let client =
             Arc::new(Client::new(client_config).context("Failed to create HyperSync client")?);
 
-        let token_fetcher = TokenFetcher::new(
-            config.rpc_url.clone(),
-            config.chain_id,
-            db.clone(),
-            historical_sender.clone(), // Token search goes to historical channel
-        );
+        let token_fetcher =
+            TokenFetcher::new(config.rpc_url.clone(), config.chain_id as i64, db.clone());
 
         let chain_tokens = ChainTokens::new(
             config.native_token_address.clone(),
@@ -112,9 +114,9 @@ impl ChainWorker {
             client,
             db: db.clone(),
             filters: LogFilter::all().and_topic0([
-                transfer::Transfer::SIGNATURE_HASH.0,
-                transfer::Deposit::SIGNATURE_HASH.0,
-                transfer::Withdrawal::SIGNATURE_HASH.0,
+                erc20::Transfer::SIGNATURE_HASH.0,
+                erc20::Deposit::SIGNATURE_HASH.0,
+                erc20::Withdrawal::SIGNATURE_HASH.0,
                 v2::PairCreated::SIGNATURE_HASH.0,
                 v3::PoolCreated::SIGNATURE_HASH.0,
                 v3::Initialize::SIGNATURE_HASH.0,
@@ -133,6 +135,7 @@ impl ChainWorker {
             chain_tokens: Arc::new(chain_tokens),
             token_fetcher,
             tip_poll_interval: Duration::from_millis(tip_poll_interval_milliseconds),
+            factories: config.factories.clone(),
         };
 
         // Pre-seed the wrapped native token to ensure it exists before any batches run.
@@ -153,9 +156,9 @@ impl ChainWorker {
         let native_token_price = self
             .db
             .postgres
-            .get_native_token_price(self.chain_id)
+            .get_native_token_price(self.chain_id as i64)
             .await?
-            .unwrap_or_else(|| NativeTokenPrice::new(self.chain_id, 0.0));
+            .unwrap_or_else(|| NativeTokenPrice::new(self.chain_id as i64, 0.0));
 
         let mut batch_state = BatchState {
             native_token_price,
@@ -171,31 +174,30 @@ impl ChainWorker {
                 break;
             }
 
-            let from_block = match self.db.postgres.get_sync_checkpoint(self.chain_id).await {
-                Ok(block) => {
-                    if block.is_some() {
-                        block.unwrap().last_indexed_block
-                    } else {
-                        0
-                    }
-                },
-                Err(e) => {
-                    warn!(
+            let mut last_synced_block: u64 =
+                match self.db.postgres.get_sync_checkpoint(self.chain_id).await {
+                    Ok(block) => {
+                        if block.is_some() {
+                            block.unwrap().last_indexed_block
+                        } else {
+                            0
+                        }
+                    },
+                    Err(e) => {
+                        warn!(
                         "Failed to fetch last block from postgres: {:?}. Starting from block 0.",
                         e
                     );
-                    0
-                },
-            };
-
-            let mut last_synced_block = from_block;
+                        0
+                    },
+                };
 
             let config = StreamConfig {
                 ..Default::default()
             };
 
             let query = Query::new()
-                .from_block(from_block as u64)
+                .from_block(last_synced_block)
                 .where_logs(self.filters.clone())
                 .select_block_fields([BlockField::Number, BlockField::Timestamp])
                 .select_log_fields([
@@ -243,9 +245,10 @@ impl ChainWorker {
 
                 // Phase 1: Parse all logs using the parser module (single-pass)
                 // Returns parsed logs in sequential order + token/pool addresses
-                let parse_result = parse_logs(
+                let parse_result = parser::parse_logs(
                     res.data.logs.into_iter().flatten(),
                     &block_timestamps,
+                    &self.chain_tokens,
                     log_count_estimate,
                 );
 
@@ -264,7 +267,7 @@ impl ChainWorker {
                 match self
                     .db
                     .postgres
-                    .get_pools(self.chain_id, &modified_pools_addresses)
+                    .get_pools(self.chain_id as i64, &modified_pools_addresses)
                     .await
                 {
                     Ok(pools) => {
@@ -298,6 +301,7 @@ impl ChainWorker {
 
                 for parsed_log in &parsed_logs {
                     match parsed_log {
+                        // V2 Mint
                         ParsedLog::V2PairCreated {
                             event,
                             log_address,
@@ -308,6 +312,13 @@ impl ChainWorker {
                             // ANTI-SPOOFING: Validate pool address is not zero
                             let event_pool_address = hex_encode(event.pair.as_slice());
                             if event_pool_address == "0x0000000000000000000000000000000000000000" {
+                                continue;
+                            }
+
+                            // FACTORY FILTER: Only index pools from allowed factories
+                            if !self.factories.is_empty()
+                                && !self.factories.contains(&log_address.to_lowercase())
+                            {
                                 continue;
                             }
 
@@ -339,7 +350,7 @@ impl ChainWorker {
                                     pool.token1_symbol.clone(),
                                     pool.protocol.clone().unwrap_or_default(),
                                     pool.protocol_version.clone().unwrap_or_default(),
-                                    pool.fee.unwrap_or(0) as u32,
+                                    pool.fee.unwrap_or(0),
                                 );
 
                                 new_pool_records.push(new_pool);
@@ -356,6 +367,13 @@ impl ChainWorker {
                             // ANTI-SPOOFING: Validate pool address is not zero
                             let event_pool_address = hex_encode(event.pool.as_slice());
                             if event_pool_address == "0x0000000000000000000000000000000000000000" {
+                                continue;
+                            }
+
+                            // FACTORY FILTER: Only index pools from allowed factories
+                            if !self.factories.is_empty()
+                                && !self.factories.contains(&log_address.to_lowercase())
+                            {
                                 continue;
                             }
 
@@ -387,7 +405,7 @@ impl ChainWorker {
                                     pool.token1_symbol.clone(),
                                     pool.protocol.clone().unwrap_or_default(),
                                     pool.protocol_version.clone().unwrap_or_default(),
-                                    pool.fee.unwrap_or(0) as u32,
+                                    pool.fee.unwrap_or(0),
                                 );
 
                                 new_pool_records.push(new_pool);
@@ -419,6 +437,20 @@ impl ChainWorker {
                                 continue;
                             }
 
+                            // FACTORY FILTER: Only index pools from allowed factories
+                            if !self.factories.is_empty()
+                                && !self.factories.contains(&log_address.to_lowercase())
+                            {
+                                continue;
+                            }
+
+                            // FACTORY FILTER: Only index pools from allowed factories
+                            if !self.factories.is_empty()
+                                && !self.factories.contains(&log_address.to_lowercase())
+                            {
+                                continue;
+                            }
+
                             if let (Some(token0), Some(token1)) = (
                                 tokens.get(&hex_encode(event.currency0.as_slice())),
                                 tokens.get(&hex_encode(event.currency1.as_slice())),
@@ -447,7 +479,7 @@ impl ChainWorker {
                                     pool.token1_symbol.clone(),
                                     pool.protocol.clone().unwrap_or_default(),
                                     pool.protocol_version.clone().unwrap_or_default(),
-                                    pool.fee.unwrap_or(0) as u32,
+                                    pool.fee.unwrap_or(0),
                                 );
 
                                 new_pool_records.push(new_pool);
@@ -470,78 +502,12 @@ impl ChainWorker {
                 // This is critical for correct pool state updates and native token price tracking
 
                 // Initialize storage vectors with capacity hints
-                let mut transfers: Vec<Transfer> = Vec::with_capacity(log_count_estimate / 4);
                 let mut events: Vec<Event> = Vec::with_capacity(log_count_estimate / 2);
+                let mut supply_events: Vec<SupplyEvent> =
+                    Vec::with_capacity(log_count_estimate / 10);
 
                 for parsed_log in parsed_logs {
                     match parsed_log {
-                        // Transfer events
-                        ParsedLog::Transfer {
-                            event,
-                            log_address,
-                            block_number,
-                            log_index,
-                            tx_hash,
-                            block_timestamp,
-                        } => {
-                            if let Some(token) = tokens.get(&log_address) {
-                                let transfer = Transfer::from_event(
-                                    self.chain_id,
-                                    log_address,
-                                    event,
-                                    block_number,
-                                    log_index,
-                                    tx_hash,
-                                    block_timestamp as u32,
-                                    token.decimals,
-                                );
-                                transfers.push(transfer);
-                            }
-                        },
-                        ParsedLog::WethDeposit {
-                            event,
-                            log_address,
-                            block_number,
-                            log_index,
-                            tx_hash,
-                            block_timestamp,
-                        } => {
-                            if !self.chain_tokens.is_wrapped_native(&log_address) {
-                                continue;
-                            }
-                            let transfer = Transfer::from_weth_deposit(
-                                self.chain_id,
-                                log_address,
-                                event,
-                                block_number,
-                                log_index,
-                                tx_hash,
-                                block_timestamp as u32,
-                            );
-                            transfers.push(transfer);
-                        },
-                        ParsedLog::WethWithdrawal {
-                            event,
-                            log_address,
-                            block_number,
-                            log_index,
-                            tx_hash,
-                            block_timestamp,
-                        } => {
-                            if !self.chain_tokens.is_wrapped_native(&log_address) {
-                                continue;
-                            }
-                            let transfer = Transfer::from_weth_withdrawal(
-                                self.chain_id,
-                                log_address,
-                                event,
-                                block_number,
-                                log_index,
-                                tx_hash,
-                                block_timestamp as u32,
-                            );
-                            transfers.push(transfer);
-                        },
                         // V2 Mint
                         ParsedLog::V2Mint {
                             event,
@@ -887,7 +853,7 @@ impl ChainWorker {
                                     (tokens.get(&pool.token0), tokens.get(&pool.token1))
                                 {
                                     let ev = Event::from_v4_swap(
-                                        self.chain_id,
+                                        self.chain_id as u64,
                                         swap_event,
                                         token0,
                                         token1,
@@ -906,6 +872,85 @@ impl ChainWorker {
                                     }
                                     events.push(ev);
                                 }
+                            }
+                        },
+
+                        // Supply: Transfer (Mint/Burn)
+                        ParsedLog::SupplyTransfer {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                            is_mint,
+                        } => {
+                            if let Some(token) = tokens.get(&log_address) {
+                                let event_type = if is_mint { "mint" } else { "burn" }.to_string();
+
+                                let event = SupplyEvent::new(
+                                    self.chain_id as u64,
+                                    block_number,
+                                    block_timestamp,
+                                    tx_hash,
+                                    log_index,
+                                    log_address,
+                                    event_type,
+                                    event.value,
+                                    token.decimals as u8,
+                                );
+
+                                supply_events.push(event);
+                            }
+                        },
+                        // Supply: Deposit (Mint for Wrapped)
+                        ParsedLog::SupplyDeposit {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                        } => {
+                            if let Some(token) = tokens.get(&log_address) {
+                                let event = SupplyEvent::new(
+                                    self.chain_id as u64,
+                                    block_number,
+                                    block_timestamp,
+                                    tx_hash,
+                                    log_index,
+                                    log_address,
+                                    "mint".to_string(),
+                                    event.amount,
+                                    token.decimals as u8,
+                                );
+
+                                supply_events.push(event);
+                            }
+                        },
+                        // Supply: Withdrawal (Burn for Wrapped)
+                        ParsedLog::SupplyWithdrawal {
+                            event,
+                            log_address,
+                            block_number,
+                            log_index,
+                            tx_hash,
+                            block_timestamp,
+                        } => {
+                            if let Some(token) = tokens.get(&log_address) {
+                                let event = SupplyEvent::new(
+                                    self.chain_id as u64,
+                                    block_number,
+                                    block_timestamp,
+                                    tx_hash,
+                                    log_index,
+                                    log_address,
+                                    "burn".to_string(),
+                                    event.amount,
+                                    token.decimals as u8,
+                                );
+
+                                supply_events.push(event);
                             }
                         },
                         _ => {},
@@ -974,24 +1019,12 @@ impl ChainWorker {
 
                 let pools_to_flush: Vec<&Pool> = pools.values().collect();
 
-                // Populate pools_by_token for efficient token-to-pool lookups
-                // This enables path finding for price resolution
-                // Create entries for both token directions
-                let pool_by_token_entries: Vec<PoolByToken> = pools_to_flush
-                    .iter()
-                    .flat_map(|pool| {
-                        let (entry0, entry1) = PoolByToken::from_pool(*pool);
-                        vec![entry0, entry1]
-                    })
-                    .collect();
-
                 // Batch flush tokens with updated prices
                 let tokens_to_flush: Vec<&crate::db::models::Token> = tokens.values().collect();
 
                 // Execute DB writes in parallel to reduce latency
-                let (pools_res, _, _) = tokio::join!(
+                let (pools_res, _) = tokio::join!(
                     self.db.postgres.set_pools(&pools_to_flush),
-                    self.db.postgres.set_pools_by_token(&pool_by_token_entries),
                     self.db.postgres.set_tokens(&tokens_to_flush)
                 );
 
@@ -1010,7 +1043,7 @@ impl ChainWorker {
                 let batch = BatchDataMessage {
                     chain_id: self.chain_id,
                     events,
-                    transfers,
+                    supply_events,
                     new_pools: new_pool_records,
                     pools: pools.values().cloned().collect(),
                     tokens: tokens.values().cloned().collect(),
@@ -1041,8 +1074,8 @@ impl ChainWorker {
                 // This is acceptable: duplicates are better than data loss,
                 // and ClickHouse's ReplacingMergeTree can handle them.
                 let next_block = res.next_block;
-                last_synced_block = next_block as i64;
-                let checkpoint = SyncCheckpoint::new(self.chain_id, next_block as i64);
+                last_synced_block = next_block;
+                let checkpoint = SyncCheckpoint::new(self.chain_id, next_block);
 
                 // Synchronously update checkpoint - errors are critical
                 if let Err(e) = self.db.postgres.set_sync_checkpoint(&checkpoint).await {

@@ -164,25 +164,21 @@ async fn update_token_price_changes(db: &Database) -> Result<usize> {
              SELECT
                 chain_id,
                 token_address,
-                sum(minted) - sum(burnt) as raw_supply
+                sum(total_supply) as circulating_supply
              FROM indexer.token_supplies
              GROUP BY chain_id, token_address
-        ),
-        token_info AS (
-             SELECT chain_id, address as token_address, decimals FROM indexer.token_search
         )
         SELECT 
             c.chain_id,
             c.token_address,
             if(p24.price_24h_ago > 0, (c.current_price - p24.price_24h_ago) / p24.price_24h_ago * 100, 0) as price_change_24h,
             if(p7d.price_7d_ago > 0, (c.current_price - p7d.price_7d_ago) / p7d.price_7d_ago * 100, 0) as price_change_7d,
-            if(info.decimals > 0, s.raw_supply / pow(10, info.decimals), 0) as circulating_supply,
+            COALESCE(s.circulating_supply, 0) as circulating_supply,
             (circulating_supply * c.current_price) as market_cap_usd
         FROM current_prices c
         LEFT JOIN prices_24h p24 ON c.chain_id = p24.chain_id AND c.token_address = p24.token_address
         LEFT JOIN prices_7d p7d ON c.chain_id = p7d.chain_id AND c.token_address = p7d.token_address
         LEFT JOIN supplies s ON c.chain_id = s.chain_id AND c.token_address = s.token_address
-        LEFT JOIN token_info info ON c.chain_id = info.chain_id AND c.token_address = info.token_address
         WHERE c.current_price > 0
     "#;
 

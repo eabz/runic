@@ -161,25 +161,9 @@ pub fn validate_price_against_volume(
 // Manipulation Detection
 // ============================================
 
-/// Minimum USD value of native token liquidity for price trust.
-/// Pools with less than this amount of native token liquidity will be flagged.
-/// Works across all chains regardless of native token price (WETH, Monad tokens, etc.)
-pub const MIN_NATIVE_LIQUIDITY_USD: f64 = 5_000.0;
-
 /// Maximum volume-to-TVL ratio before flagging as suspicious.
 /// A swap > 50% of pool TVL is suspicious (potential manipulation).
 pub const MAX_VOLUME_TO_TVL_RATIO: f64 = 0.5;
-
-/// Check if pool has sufficient native token liquidity (USD-denominated).
-/// Returns true if the pool's native token side has >= MIN_NATIVE_LIQUIDITY_USD.
-#[inline]
-pub fn has_sufficient_native_liquidity(native_amount: f64, native_price_usd: f64) -> bool {
-    if native_amount <= 0.0 || native_price_usd <= 0.0 {
-        return false;
-    }
-    let native_value_usd = native_amount * native_price_usd;
-    native_value_usd >= MIN_NATIVE_LIQUIDITY_USD
-}
 
 /// Detect suspicious price deviation relative to TVL.
 /// A swap's volume shouldn't exceed MAX_VOLUME_TO_TVL_RATIO of pool TVL.

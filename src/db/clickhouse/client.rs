@@ -9,7 +9,7 @@ use crate::{
     config::ClickHouseSettings,
     db::{
         clickhouse::ops::IngestMessage,
-        models::{Event, NewPool, PoolSnapshot, TokenSearch, TokenSnapshot, Transfer},
+        models::{Event, NewPool, PoolSnapshot, SupplyEvent, TokenSnapshot},
     },
 };
 
@@ -33,11 +33,10 @@ pub struct BatchIngestor {
 
     // Inserters for each data type - use clickhouse-rs built-in batching
     pub event_inserter: Inserter<Event>,
-    pub transfer_inserter: Inserter<Transfer>,
     pub new_pool_inserter: Inserter<NewPool>,
     pub pool_snapshot_inserter: Inserter<PoolSnapshot>,
     pub token_snapshot_inserter: Inserter<TokenSnapshot>,
-    pub token_search_inserter: Inserter<TokenSearch>,
+    pub supply_event_inserter: Inserter<SupplyEvent>,
 
     // Optional Redpanda publisher for live streaming (only used by LIVE ingestor)
     pub redpanda_publisher: Option<crate::pubsub::RedpandaPublisher>,
@@ -63,10 +62,6 @@ impl BatchIngestor {
         self.event_inserter = Self::create_inserter(&self.client, "events", &self.config);
     }
 
-    pub fn recreate_transfer_inserter(&mut self) {
-        self.transfer_inserter = Self::create_inserter(&self.client, "transfers", &self.config);
-    }
-
     pub fn recreate_new_pool_inserter(&mut self) {
         self.new_pool_inserter = Self::create_inserter(&self.client, "new_pools", &self.config);
     }
@@ -81,9 +76,9 @@ impl BatchIngestor {
             Self::create_inserter(&self.client, "token_snapshots", &self.config);
     }
 
-    pub fn recreate_token_search_inserter(&mut self) {
-        self.token_search_inserter =
-            Self::create_inserter(&self.client, "token_search", &self.config);
+    pub fn recreate_supply_event_inserter(&mut self) {
+        self.supply_event_inserter =
+            Self::create_inserter(&self.client, "supply_events", &self.config);
     }
 }
 
@@ -153,11 +148,6 @@ impl ClickhouseClient {
             client: client.clone(),
             receiver: historical_rx,
             event_inserter: BatchIngestor::create_inserter(&client, "events", &historical_config),
-            transfer_inserter: BatchIngestor::create_inserter(
-                &client,
-                "transfers",
-                &historical_config,
-            ),
             new_pool_inserter: BatchIngestor::create_inserter(
                 &client,
                 "new_pools",
@@ -173,9 +163,9 @@ impl ClickhouseClient {
                 "token_snapshots",
                 &historical_config,
             ),
-            token_search_inserter: BatchIngestor::create_inserter(
+            supply_event_inserter: BatchIngestor::create_inserter(
                 &client,
-                "token_search",
+                "supply_events",
                 &historical_config,
             ),
             config: historical_config,
@@ -195,7 +185,6 @@ impl ClickhouseClient {
             client: client.clone(),
             receiver: live_rx,
             event_inserter: BatchIngestor::create_inserter(&client, "events", &live_config),
-            transfer_inserter: BatchIngestor::create_inserter(&client, "transfers", &live_config),
             new_pool_inserter: BatchIngestor::create_inserter(&client, "new_pools", &live_config),
             pool_snapshot_inserter: BatchIngestor::create_inserter(
                 &client,
@@ -207,9 +196,9 @@ impl ClickhouseClient {
                 "token_snapshots",
                 &live_config,
             ),
-            token_search_inserter: BatchIngestor::create_inserter(
+            supply_event_inserter: BatchIngestor::create_inserter(
                 &client,
-                "token_search",
+                "supply_events",
                 &live_config,
             ),
             config: live_config,

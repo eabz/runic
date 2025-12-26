@@ -4,10 +4,10 @@ use std::sync::Arc;
 use crate::{
     db::models::{ChainTokens, Event, Pool},
     utils::{
-        calculate_reserves_from_liquidity_subgraph, has_sufficient_native_liquidity,
-        is_suspicious_volume_to_tvl, str_to_f64_with_decimals, validate_price_against_volume,
-        validate_price_ratio, validate_usd_price, validate_usd_price_relative, validate_usd_tvl,
-        validate_usd_volume, MAX_PRICE_RATIO,
+        calculate_reserves_from_liquidity_subgraph, is_suspicious_volume_to_tvl,
+        str_to_f64_with_decimals, validate_price_against_volume, validate_price_ratio,
+        validate_usd_price, validate_usd_price_relative, validate_usd_tvl, validate_usd_volume,
+        MAX_PRICE_RATIO,
     },
 };
 
@@ -19,7 +19,9 @@ const MAX_PRICE_DIVERGENCE: f64 = 0.10;
 
 /// Minimum TVL for a pool to be considered for pricing/volume (dev safeguard).
 /// Helps drop illiquid pools that can create outsized USD volumes from tiny swaps.
-const MIN_POOL_TVL_USD: f64 = 5_000.0;
+const MIN_POOL_TVL_USD: f64 = 50_000.0;
+
+const MIN_USD_THRESHOLD: f64 = 10_000.0;
 
 /// Price resolution for USD calculations.
 ///
@@ -65,22 +67,126 @@ impl PriceResolver {
     ///
     /// Returns true if:
     /// - Pool does not contain native token (defers to TVL check)
-    /// - Pool contains native token and has >= MIN_NATIVE_LIQUIDITY_USD worth of it
     ///
     /// This is a chain-agnostic check: on Ethereum (ETH ~$3000), needs ~1.7 ETH.
     /// On Monad (token ~$0.02), needs ~250,000 tokens. Works for any native token price.
-    fn check_pool_native_liquidity(&self, pool: &Pool) -> bool {
-        // Get native token side amount
-        let native_amount = if self.chain_tokens.is_wrapped_native(&pool.token0) {
-            pool.reserve0_adjusted.unwrap_or(0.0)
+    /// Check if pool has sufficient native/stable token liquidity for trusted pricing.
+    ///
+    /// Returns true if:
+    /// Check if pool has sufficient trusted token liquidity for pricing.
+    ///
+    /// Returns true if:
+    /// - Pool contains a Whitelisted (Trusted) token with >= MIN_USD_THRESHOLD worth of Active Liquidity AND Real Reserves.
+    ///
+    /// This validates the "Trusted Side" liquidity.
+    /// - For V2: Uses Reserve Balance * Price.
+    /// - For V3/V4: Uses Active Virtual Reserves (from L) * Price AND Real Accumulated Reserves.
+    fn check_pool_liquidity(&mut self, pool: &Pool, pools: &FxHashMap<String, Pool>) -> bool {
+        // Determine trusted token (Quote token priority)
+        // We select the token with the highest priority (Stable > Native > Major)
+        // to be the "Cash" side for liquidity valuation.
+
+        let (trusted_token, trusted_price) = if self.chain_tokens.is_stable(&pool.token0) {
+            (&pool.token0, 1.0)
+        } else if self.chain_tokens.is_stable(&pool.token1) {
+            (&pool.token1, 1.0)
+        } else if self.chain_tokens.is_wrapped_native(&pool.token0) {
+            (&pool.token0, self.native_price_usd)
         } else if self.chain_tokens.is_wrapped_native(&pool.token1) {
-            pool.reserve1_adjusted.unwrap_or(0.0)
+            (&pool.token1, self.native_price_usd)
+        } else if self.chain_tokens.is_major_token(&pool.token0) {
+            let p = self.get_token_price_usd(&pool.token0, pools);
+            (&pool.token0, p)
+        } else if self.chain_tokens.is_major_token(&pool.token1) {
+            let p = self.get_token_price_usd(&pool.token1, pools);
+            (&pool.token1, p)
         } else {
-            // Pool doesn't contain native token - defer to TVL check
-            return true;
+            // Pool doesn't contain ANY whitelisted token.
+            // We cannot trust the liquidity value if we can't price either side.
+            return false;
         };
 
-        has_sufficient_native_liquidity(native_amount, self.native_price_usd)
+        // If we found a trusted token but its price is 0 (unresolved), we can't use it.
+        if trusted_price <= 0.0 {
+            return false;
+        }
+
+        // 1. Calculate Active Liquidity Value of the trusted side (Virtual / Depth)
+        let liquidity_value = self.get_active_liquidity_value(pool, trusted_token, trusted_price);
+
+        if liquidity_value < MIN_USD_THRESHOLD {
+            return false;
+        }
+
+        // 2. For V3/V4, also check Real Reserves (Accumulated balances)
+        // This defeats concentrated liquidity spoofing where L is high but real capital is low.
+        if pool.protocol_version.as_deref() != Some("v2") {
+            let is_token0 = pool.token0.to_lowercase() == trusted_token.to_lowercase();
+            let real_reserve = if is_token0 {
+                pool.reserve0_adjusted.unwrap_or(0.0)
+            } else {
+                pool.reserve1_adjusted.unwrap_or(0.0)
+            };
+
+            let real_value = real_reserve * trusted_price;
+
+            // If we have tracked reserves (value > 0), ensure they also meet a threshold.
+            if real_value > 0.0 && real_value < MIN_USD_THRESHOLD {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Calculate the Active Liquidity Value (USD) of a specific token side in a pool.
+    ///
+    /// - For V2: Uses Reserve * Price.
+    /// - For V3/V4: Uses Active Virtual Reserve (from L and Price) * Price.
+    ///   This ensures we validate the depth available at the current price, key to preventing spoofed TVL.
+    fn get_active_liquidity_value(&self, pool: &Pool, token: &str, token_price_usd: f64) -> f64 {
+        let is_token0 = pool.token0.to_lowercase() == token.to_lowercase();
+        let decimals = if is_token0 { pool.token0_decimals } else { pool.token1_decimals };
+
+        // Logic for V3/V4 pools with Liquidity (L)
+        if let (Some(liquidity_str), Some(sqrt_price_str)) = (&pool.liquidity, &pool.sqrt_price_x96)
+        {
+            // Treat "0" liquidity as 0 value
+            if liquidity_str == "0" {
+                return 0.0;
+            }
+            if let (Some(liquidity), Some(sqrt_price_x96)) = (
+                str_to_f64_with_decimals(liquidity_str, 0),
+                str_to_f64_with_decimals(sqrt_price_str, 0),
+            ) {
+                if liquidity > 0.0 && sqrt_price_x96 > 0.0 {
+                    // Calculate Virtual Reserves
+                    // r0 = L / sqrtP
+                    // r1 = L * sqrtP
+                    let (r0_raw, r1_raw) =
+                        calculate_reserves_from_liquidity_subgraph(liquidity, sqrt_price_x96);
+
+                    let raw_active_balance = if is_token0 { r0_raw } else { r1_raw };
+
+                    let adjusted_active_balance = if decimals > 0 {
+                        raw_active_balance / 10_f64.powi(decimals as i32)
+                    } else {
+                        raw_active_balance
+                    };
+
+                    return adjusted_active_balance * token_price_usd;
+                }
+            }
+        }
+
+        // Logic for V2 pools (or V3 without L?? should not happen if V3 initialized)
+        // Fallback to Reserves if L is missing (V2 logic)
+        if let (Some(r0), Some(r1)) = (pool.reserve0_adjusted, pool.reserve1_adjusted) {
+            let balance = if is_token0 { r0 } else { r1 };
+            return balance * token_price_usd;
+        }
+
+        0.0
     }
 
     /// Calculate implied price from swap amounts.
@@ -89,7 +195,7 @@ impl PriceResolver {
     ///
     /// This reflects the actual execution price of the swap, which may differ
     /// from sqrtPriceX96-derived price if a V4 hook modifies the swap.
-    fn calculate_implied_price(event: &Event) -> Option<f64> {
+    fn calculate_implied_price(&self, event: &Event) -> Option<f64> {
         let amount0 = event.amount0_adjusted.abs();
         let amount1 = event.amount1_adjusted.abs();
 
@@ -105,7 +211,7 @@ impl PriceResolver {
     /// Calculate price divergence between two prices.
     ///
     /// Returns the absolute percentage difference: |price1/price2 - 1|
-    fn calculate_divergence(price1: f64, price2: f64) -> f64 {
+    fn calculate_divergence(&self, price1: f64, price2: f64) -> f64 {
         if price2 > 0.0 && price1 > 0.0 {
             (price1 / price2 - 1.0).abs()
         } else {
@@ -189,7 +295,7 @@ impl PriceResolver {
             // Use the new token0_price/token1_price fields (Uniswap style)
             // token0_price = how much token0 per 1 token1
             // token1_price = how much token1 per 1 token0
-            let (paired_token, token_price_in_paired, is_token0) = if pool.token0 == token {
+            let (paired_token, token_price_in_paired, _) = if pool.token0 == token {
                 // Token is token0, paired with token1
                 // We want: how much token1 per 1 token0 = token1_price
                 (&pool.token1, pool.token1_price, true)
@@ -233,52 +339,32 @@ impl PriceResolver {
                     // Calculate "Liquidity Value" of the paired side to weight this price
                     // We trust the paired side (Quote) value, so AmountQuote * PriceQuote = LiquidityValue
 
-                    let decimals =
-                        if is_token0 { pool.token1_decimals } else { pool.token0_decimals };
-
-                    let paired_balance_adjusted =
-                        if let (Some(liquidity_str), Some(sqrt_price_str)) =
-                            (&pool.liquidity, &pool.sqrt_price_x96)
-                        {
-                            // Priority: V3/V4 Liquidity calculation
-                            if let (Some(liquidity), Some(sqrt_price_x96)) = (
-                                str_to_f64_with_decimals(liquidity_str, 0),
-                                str_to_f64_with_decimals(sqrt_price_str, 0),
-                            ) {
-                                let (r0, r1) = calculate_reserves_from_liquidity_subgraph(
-                                    liquidity,
-                                    sqrt_price_x96,
-                                );
-                                let raw_balance = if is_token0 { r1 } else { r0 }; // If token is 0, paired is 1
-
-                                if decimals > 0 {
-                                    raw_balance / 10_f64.powi(decimals as i32)
-                                } else {
-                                    raw_balance
-                                }
-                            } else {
-                                0.0
-                            }
-                        } else if let (Some(r0), Some(r1)) =
-                            (pool.reserve0_adjusted, pool.reserve1_adjusted)
-                        {
-                            // Fallback: V2 Reserves
-                            if is_token0 {
-                                r1
-                            } else {
-                                r0
-                            }
-                        } else {
-                            0.0
-                        };
-
-                    let weight = paired_balance_adjusted * paired_price_usd;
+                    // Use the unified active liquidity value calculator
+                    let weight =
+                        self.get_active_liquidity_value(pool, &paired_token, paired_price_usd);
 
                     // If this pool has more liquidity (value) than previous best, use it
-                    // Filter out low-liquidity pools (< $5000 paired-side value)
-                    if weight > max_liquidity_value && weight > 5000.0 {
-                        max_liquidity_value = weight;
-                        best_price = validated;
+                    // Filter out low-liquidity pools
+                    if weight > max_liquidity_value && weight >= MIN_USD_THRESHOLD {
+                        // Additional check: Real Reserves for V3/V4
+                        let passes_real_check = if pool.protocol_version.as_deref() != Some("v2") {
+                            let is_token0 = pool.token0 == *paired_token;
+                            let real_reserve = if is_token0 {
+                                pool.reserve0_adjusted.unwrap_or(0.0)
+                            } else {
+                                pool.reserve1_adjusted.unwrap_or(0.0)
+                            };
+                            let real_value = real_reserve * paired_price_usd;
+                            // If we have reserve data, enforce threshold on Real Capital too
+                            real_value <= 0.0 || real_value >= MIN_USD_THRESHOLD
+                        } else {
+                            true
+                        };
+
+                        if passes_real_check {
+                            max_liquidity_value = weight;
+                            best_price = validated;
+                        }
                     }
                 }
             }
@@ -363,8 +449,10 @@ impl PriceResolver {
             }
         }
 
-        // Check minimum native token liquidity (chain-agnostic $5000 threshold)
-        if !self.check_pool_native_liquidity(pool) {
+        // Check minimum native token liquidity (chain-agnostic $10000 threshold)
+        // Check minimum active liquidity for trusted tokens (Native OR Stable)
+        // This prevents pools with high TVL but low Active Liquidity (V3 spoofing) from setting prices
+        if !self.check_pool_liquidity(pool, pools) {
             event.price_usd = 0.0;
             event.volume_usd = 0.0;
             event.is_suspicious = true;
@@ -419,14 +507,14 @@ impl PriceResolver {
         };
 
         // Implied price from swap amounts (token1 per token0)
-        let implied_price = Self::calculate_implied_price(event);
+        let implied_price = self.calculate_implied_price(event);
         let pool_price_token1_per_token0 = pool.price.and_then(validate_price_ratio);
 
         // Divergence-aware selection: apply to all pools (not just V4 hooks)
         let final_rate = match (pool_based_rate, implied_price, pool_price_token1_per_token0) {
             // Have both pool price and implied price: use implied if divergence is large
             (Some(pool_rate), Some(implied), Some(pool_price_raw)) => {
-                let divergence = Self::calculate_divergence(implied, pool_price_raw);
+                let divergence = self.calculate_divergence(implied, pool_price_raw);
                 if divergence > MAX_PRICE_DIVERGENCE {
                     // Convert implied (token1/token0) to the needed direction
                     if base_is_token0 {
@@ -478,7 +566,7 @@ impl PriceResolver {
 
         // Layer 3: Cross-validate with implied price from amounts
         // The implied price from swap amounts should roughly match our calculated price
-        if Self::calculate_implied_price(event).is_some() {
+        if self.calculate_implied_price(event).is_some() {
             // Get quote amount USD value for comparison
             let quote_amount = if base_is_token0 {
                 event.amount1_adjusted.abs()
@@ -691,6 +779,12 @@ impl PriceResolver {
 
         if !token0_whitelisted && !token1_whitelisted {
             // Neither token is whitelisted - don't set USD values
+            return (None, None);
+        }
+
+        // Check Liquidity Depth first!
+        // This prevents low-liquidity pools from setting the canonical price.
+        if !self.check_pool_liquidity(pool, pools) {
             return (None, None);
         }
 

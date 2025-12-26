@@ -20,14 +20,15 @@ CREATE TABLE IF NOT EXISTS indexer.chains (
     rpc_url                 TEXT,
     hypersync_url           TEXT,
     native_token_address    TEXT,
-    native_token_decimals   INTEGER,
+    native_token_decimals   SMALLINT,
     native_token_name       TEXT,
     native_token_symbol     TEXT,
     stable_token_address    TEXT,
-    stable_token_decimals   INTEGER,
+    stable_token_decimals   SMALLINT,
     stable_pool_address     TEXT,
     stablecoins             TEXT[],
     major_tokens            TEXT[],
+    factories               TEXT[],
     updated_at              TIMESTAMPTZ
 );
 
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS indexer.tokens (
     address                 TEXT NOT NULL,
     symbol                  TEXT,
     name                    TEXT,
-    decimals                INTEGER,
+    decimals                SMALLINT,
     price_usd               DOUBLE PRECISION,
     price_updated_at        TIMESTAMPTZ,
     price_change_24h        DOUBLE PRECISION,
@@ -73,8 +74,8 @@ CREATE TABLE IF NOT EXISTS indexer.pools (
     token1                  TEXT,
     token0_symbol           TEXT,
     token1_symbol           TEXT,
-    token0_decimals         INTEGER,
-    token1_decimals         INTEGER,
+    token0_decimals         SMALLINT,
+    token1_decimals         SMALLINT,
     base_token              TEXT,
     quote_token             TEXT,
     is_inverted             BOOLEAN,
@@ -131,24 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_pools_tvl_covering ON indexer.pools (chain_id, tv
 CREATE INDEX IF NOT EXISTS idx_pools_volume_covering ON indexer.pools (chain_id, total_volume_usd DESC NULLS LAST)
     INCLUDE (address, protocol, token0_symbol, token1_symbol, tvl_usd, price_usd);
 
-CREATE TABLE IF NOT EXISTS indexer.pools_by_token (
-    chain_id            BIGINT NOT NULL,
-    token_address       TEXT NOT NULL,
-    pool_address        TEXT NOT NULL,
-    paired_token        TEXT,
-    paired_token_symbol TEXT,
-    protocol            TEXT,
-    protocol_version    TEXT,
-    fee                 INTEGER,
-    tvl_usd             DOUBLE PRECISION,
-    volume_24h          DOUBLE PRECISION,
-    created_at          TIMESTAMPTZ,
-    updated_at          TIMESTAMPTZ,
-    PRIMARY KEY (chain_id, token_address, pool_address)
-);
 
-CREATE INDEX IF NOT EXISTS idx_pools_by_token_tvl ON indexer.pools_by_token (chain_id, token_address, tvl_usd DESC NULLS LAST);
-CREATE INDEX IF NOT EXISTS idx_pools_by_token_volume ON indexer.pools_by_token (chain_id, token_address, volume_24h DESC NULLS LAST);
 
 CREATE TABLE IF NOT EXISTS indexer.native_token_prices (
     chain_id            BIGINT PRIMARY KEY,

@@ -1,7 +1,7 @@
 # ============================================
 # Stage 1: Chef - Prepare build environment
 # ============================================
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 
 USER root
 WORKDIR /app

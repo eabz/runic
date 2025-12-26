@@ -70,36 +70,21 @@ impl ChainTokens {
 /// arrays (stablecoins, major tokens) used for price resolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DatabaseChain {
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub name: String,
     pub rpc_url: String,
     pub hypersync_url: String,
     pub enabled: bool,
     pub native_token_address: String,
-    pub native_token_decimals: i32,
+    pub native_token_decimals: u8,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub stable_token_address: String,
-    pub stable_token_decimals: i32,
+    pub stable_token_decimals: u8,
     pub stable_pool_address: String,
     pub major_tokens: Vec<String>,
     pub stablecoins: Vec<String>,
+    #[serde(default)]
+    pub factories: Vec<String>,
     pub updated_at: Option<DateTime<Utc>>,
 }
-
-// Ensure field order matches CQL schema:
-// 1. chain_id
-// 2. name
-// 3. rpc_url
-// 4. hypersync_url
-// 5. enabled
-// 6. native_token_address
-// 7. native_token_decimals
-// 8. native_token_name
-// 9. native_token_symbol
-// 10. stable_token_address
-// 11. stable_token_decimals
-// 12. stable_pool_address
-// 13. major_tokens
-// 14. stablecoins
-// 15. updated_at

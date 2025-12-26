@@ -2,7 +2,7 @@
 # Install: brew install go-task OR go install github.com/go-task/task/v3/cmd/task@latest
 # Usage: task <command>
 
-version: '3'
+version: "3"
 
 tasks:
   default:
@@ -34,7 +34,7 @@ tasks:
   logs:
     desc: Show docker compose logs
     cmds:
-      - docker compose logs -f -n 5
+      - docker compose logs runic -f -n 50
 
   restart:grafana:
     desc: Restart Grafana container

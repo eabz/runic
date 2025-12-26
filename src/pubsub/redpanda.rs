@@ -65,9 +65,8 @@ impl RedpandaPublisher {
     ///
     /// This is fire-and-forget: errors are logged but don't stop the indexer.
     /// Each data type goes to its own topic with chain_id suffix.
-    pub async fn publish_batch(&self, chain_id: i64, batch: &BatchDataMessage) {
+    pub async fn publish_batch(&self, chain_id: u64, batch: &BatchDataMessage) {
         let events_topic = format!("{}.events.{}", self.topic_prefix, chain_id);
-        let transfers_topic = format!("{}.transfers.{}", self.topic_prefix, chain_id);
         let new_pools_topic = format!("{}.new_pools.{}", self.topic_prefix, chain_id);
         let pool_states_topic = format!("{}.pool_states.{}", self.topic_prefix, chain_id);
         let token_states_topic = format!("{}.token_states.{}", self.topic_prefix, chain_id);
@@ -75,12 +74,6 @@ impl RedpandaPublisher {
         // Publish events
         for event in &batch.events {
             self.publish_message(&events_topic, &event.pool_address, event)
-                .await;
-        }
-
-        // Publish transfers
-        for transfer in &batch.transfers {
-            self.publish_message(&transfers_topic, &transfer.token_address, transfer)
                 .await;
         }
 

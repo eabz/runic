@@ -1,8 +1,6 @@
 use log::error;
 
-use crate::db::models::{
-    DatabaseChain, NativeTokenPrice, Pool, PoolByToken, SyncCheckpoint, Token,
-};
+use crate::db::models::{DatabaseChain, NativeTokenPrice, Pool, SyncCheckpoint, Token};
 use crate::db::postgres::PostgresClient;
 
 /// Sanitize a string for PostgreSQL by removing null bytes (0x00)
@@ -22,7 +20,7 @@ impl PostgresClient {
                 chain_id, name, rpc_url, hypersync_url, enabled,
                 native_token_address, native_token_decimals, native_token_name, native_token_symbol,
                 stable_token_address, stable_token_decimals, stable_pool_address,
-                major_tokens, stablecoins, updated_at
+                major_tokens, stablecoins, factories, updated_at
             FROM indexer.chains
         "#;
 
@@ -36,22 +34,28 @@ impl PostgresClient {
                 let stable_pool_address: String = row.get("stable_pool_address");
                 let major_tokens: Vec<String> = row.get("major_tokens");
                 let stablecoins: Vec<String> = row.get("stablecoins");
+                let factories: Vec<String> = row.get("factories");
+
+                let chain_id: i64 = row.get("chain_id");
+                let native_decimals: i16 = row.get("native_token_decimals");
+                let stable_decimals: i16 = row.get("stable_token_decimals");
 
                 DatabaseChain {
-                    chain_id: row.get("chain_id"),
+                    chain_id: chain_id as u64,
                     name: row.get("name"),
                     rpc_url: row.get("rpc_url"),
                     hypersync_url: row.get("hypersync_url"),
                     enabled: row.get("enabled"),
                     native_token_address: native_token_address.to_lowercase(),
-                    native_token_decimals: row.get("native_token_decimals"),
+                    native_token_decimals: native_decimals as u8,
                     native_token_name: row.get("native_token_name"),
                     native_token_symbol: row.get("native_token_symbol"),
                     stable_token_address: stable_token_address.to_lowercase(),
-                    stable_token_decimals: row.get("stable_token_decimals"),
+                    stable_token_decimals: stable_decimals as u8,
                     stable_pool_address: stable_pool_address.to_lowercase(),
                     major_tokens: major_tokens.into_iter().map(|s| s.to_lowercase()).collect(),
                     stablecoins: stablecoins.into_iter().map(|s| s.to_lowercase()).collect(),
+                    factories: factories.into_iter().map(|s| s.to_lowercase()).collect(),
                     updated_at: row.get("updated_at"),
                 }
             })
@@ -68,8 +72,8 @@ impl PostgresClient {
                 chain_id, name, rpc_url, hypersync_url, enabled,
                 native_token_address, native_token_decimals, native_token_name, native_token_symbol,
                 stable_token_address, stable_token_decimals, stable_pool_address,
-                major_tokens, stablecoins, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                major_tokens, stablecoins, factories, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (chain_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 rpc_url = EXCLUDED.rpc_url,
@@ -84,27 +88,33 @@ impl PostgresClient {
                 stable_pool_address = EXCLUDED.stable_pool_address,
                 major_tokens = EXCLUDED.major_tokens,
                 stablecoins = EXCLUDED.stablecoins,
+                factories = EXCLUDED.factories,
                 updated_at = EXCLUDED.updated_at
         "#;
+
+        let chain_id_i64 = chain.chain_id as i64;
+        let native_decimals_i16 = chain.native_token_decimals as i16;
+        let stable_decimals_i16 = chain.stable_token_decimals as i16;
 
         client
             .execute(
                 query,
                 &[
-                    &chain.chain_id,
+                    &chain_id_i64,
                     &chain.name,
                     &chain.rpc_url,
                     &chain.hypersync_url,
                     &chain.enabled,
                     &chain.native_token_address,
-                    &chain.native_token_decimals,
+                    &native_decimals_i16,
                     &chain.native_token_name,
                     &chain.native_token_symbol,
                     &chain.stable_token_address,
-                    &chain.stable_token_decimals,
+                    &stable_decimals_i16,
                     &chain.stable_pool_address,
                     &chain.major_tokens,
                     &chain.stablecoins,
+                    &chain.factories,
                     &chain.updated_at,
                 ],
             )
@@ -215,15 +225,32 @@ impl PostgresClient {
                 sanitized.push((sanitize_string(&token.symbol), sanitize_string(&token.name)));
             }
 
+            // Buffers for casted values to ensure they live long enough
+            let mut chain_ids: Vec<i64> = Vec::with_capacity(chunk.len());
+            let mut decimals_vec: Vec<i16> = Vec::with_capacity(chunk.len());
+            let mut swaps_24h_vec: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+            let mut total_swaps_vec: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+            let mut pool_counts: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+            let mut first_seen_blocks: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+
+            for token in chunk {
+                chain_ids.push(token.chain_id as i64);
+                decimals_vec.push(token.decimals as i16);
+                swaps_24h_vec.push(token.swaps_24h.map(|v| v as i64));
+                total_swaps_vec.push(token.total_swaps.map(|v| v as i64));
+                pool_counts.push(token.pool_count.map(|v| v as i64));
+                first_seen_blocks.push(token.first_seen_block.map(|v| v as i64));
+            }
+
             let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                 Vec::with_capacity(chunk.len() * COLS_PER_ROW);
 
             for (i, token) in chunk.iter().enumerate() {
-                params.push(&token.chain_id);
+                params.push(&chain_ids[i]);
                 params.push(&token.address);
                 params.push(&sanitized[i].0);
                 params.push(&sanitized[i].1);
-                params.push(&token.decimals);
+                params.push(&decimals_vec[i]);
                 params.push(&token.price_usd);
                 params.push(&token.price_updated_at);
                 params.push(&token.price_change_24h);
@@ -235,13 +262,13 @@ impl PostgresClient {
                 params.push(&token.telegram);
                 params.push(&token.discord);
                 params.push(&token.volume_24h);
-                params.push(&token.swaps_24h);
-                params.push(&token.total_swaps);
+                params.push(&swaps_24h_vec[i]);
+                params.push(&total_swaps_vec[i]);
                 params.push(&token.total_volume_usd);
-                params.push(&token.pool_count);
+                params.push(&pool_counts[i]);
                 params.push(&token.circulating_supply);
                 params.push(&token.market_cap_usd);
-                params.push(&token.first_seen_block);
+                params.push(&first_seen_blocks[i]);
                 params.push(&token.last_activity_at);
                 params.push(&token.updated_at);
             }
@@ -371,18 +398,39 @@ impl PostgresClient {
                 ));
             }
 
+            // Buffers for casted values
+            let mut chain_ids: Vec<i64> = Vec::with_capacity(chunk.len());
+            let mut token0_decimals: Vec<i16> = Vec::with_capacity(chunk.len());
+            let mut token1_decimals: Vec<i16> = Vec::with_capacity(chunk.len());
+            let mut fees: Vec<Option<i32>> = Vec::with_capacity(chunk.len());
+            let mut initial_fees: Vec<Option<i32>> = Vec::with_capacity(chunk.len());
+            let mut block_numbers: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+            let mut swaps_24h_vec: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+            let mut total_swaps_vec: Vec<Option<i64>> = Vec::with_capacity(chunk.len());
+
+            for pool in chunk {
+                chain_ids.push(pool.chain_id as i64);
+                token0_decimals.push(pool.token0_decimals as i16);
+                token1_decimals.push(pool.token1_decimals as i16);
+                fees.push(pool.fee.map(|v| v as i32));
+                initial_fees.push(pool.initial_fee.map(|v| v as i32));
+                block_numbers.push(pool.block_number.map(|v| v as i64));
+                swaps_24h_vec.push(pool.swaps_24h.map(|v| v as i64));
+                total_swaps_vec.push(pool.total_swaps.map(|v| v as i64));
+            }
+
             let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                 Vec::with_capacity(chunk.len() * COLS_PER_ROW);
 
             for (i, pool) in chunk.iter().enumerate() {
-                params.push(&pool.chain_id);
+                params.push(&chain_ids[i]);
                 params.push(&pool.address);
                 params.push(&pool.token0);
                 params.push(&pool.token1);
                 params.push(&sanitized[i].0);
                 params.push(&sanitized[i].1);
-                params.push(&pool.token0_decimals);
-                params.push(&pool.token1_decimals);
+                params.push(&token0_decimals[i]);
+                params.push(&token1_decimals[i]);
                 params.push(&pool.base_token);
                 params.push(&pool.quote_token);
                 params.push(&pool.is_inverted);
@@ -390,11 +438,11 @@ impl PostgresClient {
                 params.push(&pool.protocol);
                 params.push(&pool.protocol_version);
                 params.push(&pool.factory);
-                params.push(&pool.fee);
-                params.push(&pool.initial_fee);
+                params.push(&fees[i]);
+                params.push(&initial_fees[i]);
                 params.push(&pool.hook_address);
                 params.push(&pool.created_at);
-                params.push(&pool.block_number);
+                params.push(&block_numbers[i]);
                 params.push(&pool.tx_hash);
                 params.push(&pool.reserve0);
                 params.push(&pool.reserve1);
@@ -411,8 +459,8 @@ impl PostgresClient {
                 params.push(&pool.price_change_24h);
                 params.push(&pool.price_change_7d);
                 params.push(&pool.volume_24h);
-                params.push(&pool.swaps_24h);
-                params.push(&pool.total_swaps);
+                params.push(&swaps_24h_vec[i]);
+                params.push(&total_swaps_vec[i]);
                 params.push(&pool.total_volume_usd);
                 params.push(&pool.tvl_usd);
                 params.push(&pool.last_swap_at);
@@ -433,16 +481,17 @@ impl PostgresClient {
     /// Get sync checkpoint for a chain
     pub async fn get_sync_checkpoint(
         &self,
-        chain_id: i64,
+        chain_id: u64,
     ) -> anyhow::Result<Option<SyncCheckpoint>> {
         let client = self.pool.get().await?;
+        let chain_id = chain_id as i64;
         let query = "SELECT chain_id, last_indexed_block, updated_at FROM indexer.sync_checkpoints WHERE chain_id = $1";
 
         let row = client.query_opt(query, &[&chain_id]).await?;
 
         Ok(row.map(|r| SyncCheckpoint {
-            chain_id: r.get("chain_id"),
-            last_indexed_block: r.get("last_indexed_block"),
+            chain_id: (r.get::<_, i64>("chain_id")) as u64,
+            last_indexed_block: (r.get::<_, i64>("last_indexed_block")) as u64,
             updated_at: r.get("updated_at"),
         }))
     }
@@ -458,10 +507,13 @@ impl PostgresClient {
                 updated_at = EXCLUDED.updated_at
         "#;
 
+        let chain_id_i64 = checkpoint.chain_id as i64;
+        let last_indexed_block_i64 = checkpoint.last_indexed_block as i64;
+
         client
             .execute(
                 query,
-                &[&checkpoint.chain_id, &checkpoint.last_indexed_block, &checkpoint.updated_at],
+                &[&chain_id_i64, &last_indexed_block_i64, &checkpoint.updated_at],
             )
             .await
             .map_err(|e| {
@@ -586,105 +638,29 @@ impl PostgresClient {
 
     // ==================== POOLS BY TOKEN ====================
 
-    /// Batch insert/update multiple pool_by_token entries (true batch insert with multi-row VALUES)
-    pub async fn set_pools_by_token(&self, entries: &[PoolByToken]) -> anyhow::Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        const COLS_PER_ROW: usize = 12;
-        const BATCH_SIZE: usize = 1000; // Smaller batches to avoid "value too large to transmit"
-
-        let client = self.pool.get().await?;
-
-        for chunk in entries.chunks(BATCH_SIZE) {
-            // Build VALUES placeholders
-            let values_clauses: Vec<String> = chunk
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    let start = i * COLS_PER_ROW + 1;
-                    let placeholders: Vec<String> = (start..start + COLS_PER_ROW)
-                        .map(|n| format!("${}", n))
-                        .collect();
-                    format!("({})", placeholders.join(", "))
-                })
-                .collect();
-
-            let query = format!(
-                r#"
-                INSERT INTO indexer.pools_by_token (
-                    chain_id, token_address, pool_address, paired_token, paired_token_symbol,
-                    protocol, protocol_version, fee, tvl_usd, volume_24h, created_at, updated_at
-                ) VALUES {}
-                ON CONFLICT (chain_id, token_address, pool_address) DO UPDATE SET
-                    paired_token = EXCLUDED.paired_token,
-                    paired_token_symbol = EXCLUDED.paired_token_symbol,
-                    protocol = EXCLUDED.protocol,
-                    protocol_version = EXCLUDED.protocol_version,
-                    fee = EXCLUDED.fee,
-                    tvl_usd = EXCLUDED.tvl_usd,
-                    volume_24h = EXCLUDED.volume_24h,
-                    created_at = EXCLUDED.created_at,
-                    updated_at = EXCLUDED.updated_at
-                "#,
-                values_clauses.join(", ")
-            );
-
-            // Store sanitized strings
-            let mut sanitized: Vec<String> = Vec::with_capacity(chunk.len());
-            for entry in chunk {
-                sanitized.push(sanitize_string(&entry.paired_token_symbol));
-            }
-
-            let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                Vec::with_capacity(chunk.len() * COLS_PER_ROW);
-
-            for (i, entry) in chunk.iter().enumerate() {
-                params.push(&entry.chain_id);
-                params.push(&entry.token_address);
-                params.push(&entry.pool_address);
-                params.push(&entry.paired_token);
-                params.push(&sanitized[i]);
-                params.push(&entry.protocol);
-                params.push(&entry.protocol_version);
-                params.push(&entry.fee);
-                params.push(&entry.tvl_usd);
-                params.push(&entry.volume_24h);
-                params.push(&entry.created_at);
-                params.push(&entry.updated_at);
-            }
-
-            client.execute(&query, &params).await.map_err(|e| {
-                error!(
-                    "Failed to batch insert {} pool_by_token entries: {:?}",
-                    chunk.len(),
-                    e
-                );
-                e
-            })?;
-        }
-
-        Ok(())
-    }
-
     /// Get all pools containing a specific token
     pub async fn get_pools_for_token(
         &self,
         chain_id: i64,
         token_address: &str,
-    ) -> anyhow::Result<Vec<PoolByToken>> {
+    ) -> anyhow::Result<Vec<Pool>> {
         let client = self.pool.get().await?;
         let query = r#"
             SELECT 
-                chain_id, token_address, pool_address, paired_token, paired_token_symbol,
-                protocol, protocol_version, fee, tvl_usd, volume_24h, created_at, updated_at
-            FROM indexer.pools_by_token
-            WHERE chain_id = $1 AND token_address = $2
+                chain_id, address, token0, token1, token0_symbol, token1_symbol,
+                token0_decimals, token1_decimals, base_token, quote_token, is_inverted,
+                quote_token_priority, protocol, protocol_version, factory, fee, initial_fee,
+                hook_address, created_at, block_number, tx_hash, reserve0, reserve1,
+                reserve0_adjusted, reserve1_adjusted, sqrt_price_x96, tick, tick_spacing,
+                liquidity, price, token0_price, token1_price, price_usd, price_change_24h,
+                price_change_7d, volume_24h, swaps_24h, total_swaps, total_volume_usd,
+                tvl_usd, last_swap_at, updated_at
+            FROM indexer.pools
+            WHERE chain_id = $1 AND (token0 = $2 OR token1 = $2)
         "#;
 
         let rows = client.query(query, &[&chain_id, &token_address]).await?;
-        let pools = rows.iter().map(|row| row_to_pool_by_token(row)).collect();
+        let pools = rows.iter().map(|row| row_to_pool(row)).collect();
 
         Ok(pools)
     }
@@ -693,14 +669,18 @@ impl PostgresClient {
 // ==================== HELPER FUNCTIONS ====================
 
 fn row_to_token(row: &tokio_postgres::Row) -> Token {
-    // Lowercase addresses for consistent comparisons
+    let chain_id: i64 = row.get("chain_id");
     let address: String = row.get("address");
+    let symbol: String = row.get("symbol");
+    let name: String = row.get("name");
+    let decimals: i16 = row.get("decimals");
+
     Token {
-        chain_id: row.get("chain_id"),
-        address: address.to_lowercase(),
-        symbol: row.get("symbol"),
-        name: row.get("name"),
-        decimals: row.get("decimals"),
+        chain_id: chain_id as u64,
+        address: address.to_lowercase(), // Lowercase addresses for consistent comparisons
+        symbol,
+        name,
+        decimals: decimals as u8,
         price_usd: row.get("price_usd"),
         price_updated_at: row.get("price_updated_at"),
         price_change_24h: row.get("price_change_24h"),
@@ -712,13 +692,15 @@ fn row_to_token(row: &tokio_postgres::Row) -> Token {
         telegram: row.get("telegram"),
         discord: row.get("discord"),
         volume_24h: row.get("volume_24h"),
-        swaps_24h: row.get("swaps_24h"),
-        total_swaps: row.get("total_swaps"),
+        swaps_24h: row.get::<_, Option<i64>>("swaps_24h").map(|v| v as u64),
+        total_swaps: row.get::<_, Option<i64>>("total_swaps").map(|v| v as u64),
         total_volume_usd: row.get("total_volume_usd"),
-        pool_count: row.get("pool_count"),
+        pool_count: row.get::<_, Option<i64>>("pool_count").map(|v| v as u64),
         circulating_supply: row.get("circulating_supply"),
         market_cap_usd: row.get("market_cap_usd"),
-        first_seen_block: row.get("first_seen_block"),
+        first_seen_block: row
+            .get::<_, Option<i64>>("first_seen_block")
+            .map(|v| v as u64),
         last_activity_at: row.get("last_activity_at"),
         updated_at: row.get("updated_at"),
     }
@@ -731,16 +713,24 @@ fn row_to_pool(row: &tokio_postgres::Row) -> Pool {
         val.to_lowercase()
     }
 
+    let chain_id: i64 = row.get("chain_id");
+    let address: String = get_lowercased(row, "address");
+    let token0: String = get_lowercased(row, "token0");
+    let token1: String = get_lowercased(row, "token1");
+    let token0_symbol: String = row.get("token0_symbol");
+    let token1_symbol: String = row.get("token1_symbol");
+    let token0_decimals: i16 = row.get("token0_decimals");
+    let token1_decimals: i16 = row.get("token1_decimals");
+
     Pool {
-        chain_id: row.get("chain_id"),
-        // Ensure all addresses are lowercased for consistent comparisons
-        address: get_lowercased(row, "address"),
-        token0: get_lowercased(row, "token0"),
-        token1: get_lowercased(row, "token1"),
-        token0_symbol: row.get("token0_symbol"),
-        token1_symbol: row.get("token1_symbol"),
-        token0_decimals: row.get("token0_decimals"),
-        token1_decimals: row.get("token1_decimals"),
+        chain_id: chain_id as u64,
+        address,
+        token0,
+        token1,
+        token0_symbol,
+        token1_symbol,
+        token0_decimals: token0_decimals as u8,
+        token1_decimals: token1_decimals as u8,
         base_token: get_lowercased(row, "base_token"),
         quote_token: get_lowercased(row, "quote_token"),
         is_inverted: row.get("is_inverted"),
@@ -748,11 +738,11 @@ fn row_to_pool(row: &tokio_postgres::Row) -> Pool {
         protocol: row.get("protocol"),
         protocol_version: row.get("protocol_version"),
         factory: row.get("factory"),
-        fee: row.get("fee"),
-        initial_fee: row.get("initial_fee"),
+        fee: row.get::<_, Option<i32>>("fee").map(|v| v as u32),
+        initial_fee: row.get::<_, Option<i32>>("initial_fee").map(|v| v as u32),
         hook_address: row.get("hook_address"),
         created_at: row.get("created_at"),
-        block_number: row.get("block_number"),
+        block_number: row.get::<_, Option<i64>>("block_number").map(|v| v as u64),
         tx_hash: row.get("tx_hash"),
         reserve0: row.get("reserve0"),
         reserve1: row.get("reserve1"),
@@ -769,32 +759,11 @@ fn row_to_pool(row: &tokio_postgres::Row) -> Pool {
         price_change_24h: row.get("price_change_24h"),
         price_change_7d: row.get("price_change_7d"),
         volume_24h: row.get("volume_24h"),
-        swaps_24h: row.get("swaps_24h"),
-        total_swaps: row.get("total_swaps"),
+        swaps_24h: row.get::<_, Option<i64>>("swaps_24h").map(|v| v as u64),
+        total_swaps: row.get::<_, Option<i64>>("total_swaps").map(|v| v as u64),
         total_volume_usd: row.get("total_volume_usd"),
         tvl_usd: row.get("tvl_usd"),
         last_swap_at: row.get("last_swap_at"),
-        updated_at: row.get("updated_at"),
-    }
-}
-
-fn row_to_pool_by_token(row: &tokio_postgres::Row) -> PoolByToken {
-    // Lowercase addresses for consistent comparisons
-    let token_address: String = row.get("token_address");
-    let pool_address: String = row.get("pool_address");
-    let paired_token: String = row.get("paired_token");
-    PoolByToken {
-        chain_id: row.get("chain_id"),
-        token_address: token_address.to_lowercase(),
-        pool_address: pool_address.to_lowercase(),
-        paired_token: paired_token.to_lowercase(),
-        paired_token_symbol: row.get("paired_token_symbol"),
-        protocol: row.get("protocol"),
-        protocol_version: row.get("protocol_version"),
-        fee: row.get("fee"),
-        tvl_usd: row.get("tvl_usd"),
-        volume_24h: row.get("volume_24h"),
-        created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
 }

@@ -62,9 +62,9 @@ pub fn sqrt_price_x96_str_to_adjusted_price(
     // decimal adjustment: 10^(decimals0 - decimals1)
     let decimal_diff = token0_decimals as i32 - token1_decimals as i32;
     let adjusted = if decimal_diff >= 0 {
-        raw_price * big_pow10(decimal_diff as u32)
+        raw_price * big_pow10(decimal_diff as u8)
     } else {
-        raw_price / big_pow10((-decimal_diff) as u32)
+        raw_price / big_pow10((-decimal_diff) as u8)
     };
 
     let adjusted_f64 = adjusted.to_f64()?;

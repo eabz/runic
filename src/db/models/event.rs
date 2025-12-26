@@ -68,7 +68,7 @@ pub struct Event {
 
 impl Event {
     pub fn from_v2_swap(
-        chain_id: i64,
+        chain_id: u64,
         event: v2::Swap,
         token0: &Token,
         token1: &Token,
@@ -108,7 +108,7 @@ impl Event {
         };
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -141,7 +141,7 @@ impl Event {
     }
 
     pub fn from_v3_swap(
-        chain_id: i64,
+        chain_id: u64,
         event: v3::Swap,
         token0: &Token,
         token1: &Token,
@@ -178,13 +178,13 @@ impl Event {
         let sqrt_price_u256 = U256::from(event.sqrtPriceX96);
         let price = sqrt_price_x96_str_to_adjusted_price(
             &sqrt_price_u256.to_string(),
-            token0.decimals as u8,
-            token1.decimals as u8,
+            token0.decimals,
+            token1.decimals,
         )
         .unwrap_or(0.0);
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -217,7 +217,7 @@ impl Event {
     }
 
     pub fn from_v4_swap(
-        chain_id: i64,
+        chain_id: u64,
         event: v4::Swap,
         token0: &Token,
         token1: &Token,
@@ -255,13 +255,13 @@ impl Event {
         let sqrt_price_u256 = U256::from(event.sqrtPriceX96);
         let price = sqrt_price_x96_str_to_adjusted_price(
             &sqrt_price_u256.to_string(),
-            token0.decimals as u8,
-            token1.decimals as u8,
+            token0.decimals,
+            token1.decimals,
         )
         .unwrap_or(0.0);
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -294,7 +294,7 @@ impl Event {
     }
 
     pub fn from_v2_mint(
-        chain_id: i64,
+        chain_id: u64,
         event: v2::Mint,
         token0: &Token,
         token1: &Token,
@@ -313,7 +313,7 @@ impl Event {
         let amount1_adjusted = u256_to_f64(event.amount1, token1.decimals);
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -346,7 +346,7 @@ impl Event {
     }
 
     pub fn from_v2_burn(
-        chain_id: i64,
+        chain_id: u64,
         event: v2::Burn,
         token0: &Token,
         token1: &Token,
@@ -365,7 +365,7 @@ impl Event {
         let amount1_adjusted = u256_to_f64(event.amount1, token1.decimals);
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -398,7 +398,7 @@ impl Event {
     }
 
     pub fn from_v3_mint(
-        chain_id: i64,
+        chain_id: u64,
         event: v3::Mint,
         token0: &Token,
         token1: &Token,
@@ -419,7 +419,7 @@ impl Event {
         let liquidity = into_u256(U256::from(event.amount));
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -452,7 +452,7 @@ impl Event {
     }
 
     pub fn from_v3_burn(
-        chain_id: i64,
+        chain_id: u64,
         event: v3::Burn,
         token0: &Token,
         token1: &Token,
@@ -473,7 +473,7 @@ impl Event {
         let liquidity = into_u256(U256::from(event.amount));
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -506,7 +506,7 @@ impl Event {
     }
 
     pub fn from_v3_collect(
-        chain_id: i64,
+        chain_id: u64,
         event: v3::Collect,
         token0: &Token,
         token1: &Token,
@@ -528,7 +528,7 @@ impl Event {
         let amount1_adjusted = u256_to_f64(amount1_u256, token1.decimals);
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,
@@ -561,7 +561,7 @@ impl Event {
     }
 
     pub fn from_v4_modify_liquidity(
-        chain_id: i64,
+        chain_id: u64,
         event: v4::ModifyLiquidity,
         token0: &Token,
         token1: &Token,
@@ -613,7 +613,7 @@ impl Event {
         );
 
         Self {
-            chain_id: chain_id as u64,
+            chain_id,
             block_number,
             timestamp,
             tx_hash,

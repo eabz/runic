@@ -7,13 +7,13 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Token {
     // Primary key
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub address: String,
 
     // On-chain metadata (immutable after first fetch)
     pub symbol: String,
     pub name: String,
-    pub decimals: i32,
+    pub decimals: u8,
 
     // Current price state
     pub price_usd: Option<f64>,
@@ -35,19 +35,19 @@ pub struct Token {
 
     // Rolling window stats (24h)
     pub volume_24h: Option<f64>,
-    pub swaps_24h: Option<i64>,
+    pub swaps_24h: Option<u64>,
 
     // Lifetime stats
-    pub total_swaps: Option<i64>,
+    pub total_swaps: Option<u64>,
     pub total_volume_usd: Option<f64>,
-    pub pool_count: Option<i64>,
+    pub pool_count: Option<u64>,
 
     // Market data (calculated internally)
     pub circulating_supply: Option<f64>,
     pub market_cap_usd: Option<f64>,
 
     // Activity tracking
-    pub first_seen_block: Option<i64>,
+    pub first_seen_block: Option<u64>,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -56,12 +56,12 @@ impl Token {
     /// Constructor for just metadata (used by TokenFetcher)
     pub fn new(chain_id: u64, address: String, symbol: String, name: String, decimals: u8) -> Self {
         Self {
-            chain_id: chain_id as i64,
+            chain_id,
             // Always lowercase addresses for consistent comparisons
             address: address.to_lowercase(),
             symbol,
             name,
-            decimals: decimals as i32,
+            decimals,
             price_usd: None,
             price_updated_at: None,
             price_change_24h: None,

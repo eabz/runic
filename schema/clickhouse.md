@@ -16,7 +16,7 @@ This database stores time-series and historical data:
 2. Heavy use of Materialized Views for pre-aggregation
 3. Projections for alternative query patterns without data duplication
 4. Partitioned by month for efficient data lifecycle management
-5. TTL policies to automatically expire old granular data
+
 
 ---
 
@@ -39,9 +39,7 @@ This database stores time-series and historical data:
 - `collect` - Collect fees (V3)
 - `modify_liquidity` - Add/remove liquidity (V4)
 
-**Data Lifecycle:**
-- Raw events have 1-year TTL (configurable)
-- Aggregated data (candles, snapshots) kept longer
+
 
 **Key Fields:**
 | Field | Type | Description |
@@ -121,7 +119,7 @@ Each candle table has a corresponding MV that auto-populates from the lower reso
 
 **Population:** Background job queries current state + aggregates periodically
 
-**TTL:** 2 years
+
 
 ### Table: `token_snapshots` (Daily)
 
@@ -134,64 +132,13 @@ Each candle table has a corresponding MV that auto-populates from the lower reso
 
 **Population:** Background job aggregates daily at midnight UTC
 
-**TTL:** 5 years
+
 
 ---
 
-## Section 4: Token Transfers
 
-### Table: `transfers`
 
-**Purpose:** Track all ERC20 token transfers
-
-**Query Patterns:**
-- "Get all transfers for token X"
-- "Get transfer history for user X" (via projection)
-
-**Uses:**
-- Calculate circulating supply (mints - burns)
-- Track whale movements
-- Portfolio tracking
-
-**Projections:**
-- `by_sender` - Query transfers sent by user
-- `by_receiver` - Query transfers received by user
-
-**TTL:** 1 year
-
-### Table: `transfers_state` (Aggregated Balances)
-
-**Purpose:** Maintain running balance per user per token
-
-**Engine:** SummingMergeTree automatically sums numeric columns on merge
-
-**Query Patterns:**
-- "Get balance of token X for user Y"
-- "Get all token balances for user Y"
-
-**Balance Calculation:** `balance = value_in - value_out`
-
----
-
-## Section 5: Token Search
-
-### Table: `token_search`
-
-**Purpose:** Fast token search by symbol/name
-
-**Query Pattern:** "Search tokens matching 'USD'"
-
-**Why Separate from ScyllaDB?**
-- ScyllaDB: Point lookups by exact address
-- ClickHouse: Fuzzy search with bloom filters
-
-**Indexes:**
-- Bloom filters for fast text search (`tokenbf_v1`)
-- Ngram index for partial matching (`ngrambf_v1`)
-
----
-
-## Section 6: Trader Statistics
+## Section 4: Trader Statistics
 
 ### Table: `trader_stats`
 
@@ -208,7 +155,7 @@ Each candle table has a corresponding MV that auto-populates from the lower reso
 
 ---
 
-## Section 7: New Pools Discovery
+## Section 5: New Pools Discovery
 
 ### Table: `new_pools`
 
@@ -226,7 +173,34 @@ Each candle table has a corresponding MV that auto-populates from the lower reso
 - `by_token0` - Query by token0
 - `by_token1` - Query by token1
 
-**TTL:** 90 days
+
+
+---
+
+## Section 6: Token Supply Tracking
+
+### Table: `supply_events`
+
+**Purpose:** Track individual mint and burn events to calculate token supply (as alternative to expensive transfer tracking).
+
+**Key Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `token_address` | String | Token address |
+| `type` | String | 'mint' or 'burn' |
+| `amount` | UInt256 | Raw amount |
+| `amount_adjusted` | Float64 | Decimal-adjusted amount |
+
+### Table: `token_supplies`
+
+**Purpose:** Aggregate total supply per token.
+
+**Engine:** AggregatingMergeTree
+
+**State:**
+- `total_supply`: Sum of (mints - burns)
+- `total_minted`: Total minted amount
+- `total_burnt`: Total burnt amount
 
 ---
 
@@ -258,35 +232,29 @@ WHERE chain_id = 1
 ORDER BY total_volume_usd DESC
 LIMIT 100;
 
--- Search tokens by symbol
-SELECT * FROM indexer.token_search
-WHERE chain_id = 1 AND symbol LIKE '%USD%';
 
--- Get user's token balance
-SELECT token_address, value_in - value_out as balance
-FROM indexer.transfers_state
-WHERE chain_id = 1 AND owner = '0x...'
-ORDER BY balance DESC;
 
 -- Get newest pools in last 24h
 SELECT * FROM indexer.new_pools
-WHERE chain_id = 1 AND created_at >= now() - INTERVAL 1 DAY
-ORDER BY created_at DESC;
+WHERE chain_id = 1 AND timestamp > now() - INTERVAL 24 HOUR
+ORDER BY timestamp DESC
+LIMIT 10;
+
+-- Get total supply for a token
+SELECT 
+    token_address,
+    total_supply,
+    total_minted,
+    total_burnt
+FROM indexer.token_supplies
+WHERE chain_id = 1 AND token_address = '0xa0b8...';
 ```
 
 ---
 
 ## Maintenance Notes
 
-### TTL Policies
-| Table | TTL |
-|-------|-----|
-| events | 1 year |
-| transfers | 1 year |
-| pool_snapshots | 2 years |
-| token_snapshots | 5 years |
-| new_pools | 90 days |
-| candles | No TTL (small) |
+
 
 ### Background Jobs Required
 - `pool_snapshots`: Hourly job to snapshot pool state

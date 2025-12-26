@@ -1,7 +1,6 @@
 use crate::abis::erc20::IERC20;
 use crate::abis::multicall::Call3;
-use crate::db::clickhouse::{IngestMessage, TokenSearchMessage};
-use crate::db::models::{DatabaseChain, TokenSearch};
+use crate::db::models::DatabaseChain;
 use crate::Database;
 use crate::{abis::multicall::IMulticall3, db::models::Token};
 use alloy::providers::MULTICALL3_ADDRESS;
@@ -15,7 +14,6 @@ use moka::future::Cache;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use url::Url;
 
 /// Token metadata fetcher using multicall3
@@ -24,8 +22,6 @@ pub struct TokenFetcher {
     db: Arc<Database>,
     chain_id: i64,
     provider: DynProvider,
-    /// Sender for ClickHouse ingestion (for token search index)
-    sender: mpsc::Sender<IngestMessage>,
     /// Cache of token addresses that failed to fetch (invalid contracts, no decimals, etc.)
     /// Prevents repeatedly trying to fetch tokens that will never succeed
     invalid_tokens: Cache<String, ()>,
@@ -41,12 +37,7 @@ const RETRY_DELAY_MS: u64 = 100;
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl TokenFetcher {
-    pub fn new(
-        rpc_url: String,
-        chain_id: i64,
-        db: Arc<Database>,
-        sender: mpsc::Sender<IngestMessage>,
-    ) -> Self {
+    pub fn new(rpc_url: String, chain_id: i64, db: Arc<Database>) -> Self {
         let url = Url::parse(&rpc_url).expect("Invalid RPC URL");
 
         let client = ProviderBuilder::new().connect_http(url);
@@ -65,7 +56,6 @@ impl TokenFetcher {
             db,
             chain_id,
             provider,
-            sender,
             invalid_tokens,
         }
     }
@@ -113,20 +103,10 @@ impl TokenFetcher {
 
             // Collect new tokens for batch save and search index
             let mut new_tokens_for_save = Vec::new();
-            let mut new_tokens_for_search = Vec::new();
 
             // Zip the requested addresses with the fetched results
             for (requested_addr, maybe_token) in missing_addresses.iter().zip(fetched.into_iter()) {
                 if let Some(token) = maybe_token {
-                    // Add to search index batch
-                    new_tokens_for_search.push(TokenSearch::new(
-                        token.chain_id as u64,
-                        token.address.clone(),
-                        token.symbol.clone(),
-                        token.name.clone(),
-                        token.decimals as u8,
-                    ));
-
                     new_tokens_for_save.push(token.clone());
                     result.insert(requested_addr.clone(), token);
                 } else {
@@ -139,16 +119,6 @@ impl TokenFetcher {
             if !new_tokens_for_save.is_empty() {
                 let refs: Vec<&Token> = new_tokens_for_save.iter().collect();
                 let _ = self.db.postgres.set_tokens(&refs).await;
-            }
-
-            // Send new tokens to ClickHouse for search indexing
-            if !new_tokens_for_search.is_empty() {
-                let _ = self
-                    .sender
-                    .send(IngestMessage::TokenSearch(TokenSearchMessage {
-                        tokens: new_tokens_for_search,
-                    }))
-                    .await;
             }
         }
 

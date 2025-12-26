@@ -19,14 +19,14 @@ datasources:
     editable: true
     jsonData:
       defaultDatabase: indexer
-      host: jbzw61kexd.eu-central-1.aws.clickhouse.cloud
+      host: ""
       port: 9440
       protocol: native
       secure: true
       username: default
       tlsSkipVerify: false
     secureJsonData:
-      password: BCPY8~mpdbrqc
+      password: ""
 
   # PostgreSQL Data Source (for state data)
   - name: PostgreSQL
@@ -44,4 +44,4 @@ datasources:
       maxIdleConns: 5
       connMaxLifetime: 14400
     secureJsonData:
-      password: runic_secret_password
+      password: ""

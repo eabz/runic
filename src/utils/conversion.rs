@@ -46,7 +46,7 @@ pub fn into_u256(v: alloy::primitives::U256) -> UInt256 {
 /// let value = U256::from(1_000_000_000_000_000_000u128); // 1e18
 /// let adjusted = u256_to_f64(value, 18); // Returns 1.0
 /// ```
-pub fn u256_to_f64(value: U256, decimals: i32) -> f64 {
+pub fn u256_to_f64(value: U256, decimals: u8) -> f64 {
     u256_to_f64_safe(value, decimals).unwrap_or(0.0)
 }
 
@@ -61,18 +61,14 @@ pub fn u256_to_f64(value: U256, decimals: i32) -> f64 {
 ///
 /// # Returns
 /// * `Some(f64)` if conversion succeeds, `None` if it fails
-pub fn u256_to_f64_safe(value: U256, decimals: i32) -> Option<f64> {
+pub fn u256_to_f64_safe(value: U256, decimals: u8) -> Option<f64> {
     // Convert U256 to BigDecimal via bytes (faster than string parsing)
     let bytes: [u8; 32] = value.to_le_bytes();
     let big_int = BigInt::from_bytes_le(num_bigint::Sign::Plus, &bytes);
     let big_value = BigDecimal::from(big_int);
 
     // Apply decimal adjustment
-    let adjusted = if decimals >= 0 {
-        big_value / big_pow10(decimals as u32)
-    } else {
-        big_value * big_pow10((-decimals) as u32)
-    };
+    let adjusted = big_value / big_pow10(decimals);
 
     // Convert to f64
     let result = adjusted.to_f64()?;
@@ -100,14 +96,10 @@ pub fn u256_to_f64_safe(value: U256, decimals: i32) -> Option<f64> {
 ///
 /// # Returns
 /// * `Some(f64)` if parsing succeeds and value is valid, `None` otherwise
-pub fn str_to_f64_with_decimals(value_str: &str, decimals: i32) -> Option<f64> {
+pub fn str_to_f64_with_decimals(value_str: &str, decimals: u8) -> Option<f64> {
     let big_value = BigDecimal::from_str(value_str).ok()?;
 
-    let adjusted = if decimals >= 0 {
-        big_value / big_pow10(decimals as u32)
-    } else {
-        big_value * big_pow10((-decimals) as u32)
-    };
+    let adjusted = big_value / big_pow10(decimals);
 
     let result = adjusted.to_f64()?;
 
@@ -129,14 +121,10 @@ pub fn str_to_f64_with_decimals(value_str: &str, decimals: i32) -> Option<f64> {
 ///
 /// # Returns
 /// * The adjusted f64 value, or 0.0 if conversion fails
-pub fn reserve_to_f64(reserve: u128, decimals: i32) -> f64 {
+pub fn reserve_to_f64(reserve: u128, decimals: u8) -> f64 {
     let big_value = BigDecimal::from(reserve);
 
-    let adjusted = if decimals >= 0 {
-        big_value / big_pow10(decimals as u32)
-    } else {
-        big_value * big_pow10((-decimals) as u32)
-    };
+    let adjusted = if decimals == 0 { big_value } else { big_value / big_pow10(decimals) };
 
     adjusted.to_f64().unwrap_or(0.0)
 }
@@ -212,10 +200,10 @@ static POW10_CACHE: Lazy<[BigDecimal; 25]> =
     Lazy::new(|| std::array::from_fn(|i| BigDecimal::from(BigInt::from(10u32).pow(i as u32))));
 
 /// Compute 10^exp as BigDecimal.
-pub(crate) fn big_pow10(exp: u32) -> BigDecimal {
+pub(crate) fn big_pow10(exp: u8) -> BigDecimal {
     if (exp as usize) < POW10_CACHE.len() {
         POW10_CACHE[exp as usize].clone()
     } else {
-        BigDecimal::from(BigInt::from(10u32).pow(exp))
+        BigDecimal::from(BigInt::from(10u32).pow(exp as u32))
     }
 }

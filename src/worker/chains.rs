@@ -29,7 +29,7 @@ struct RunningChain {
 /// - Starts indexers for newly enabled chains
 /// - Gracefully stops indexers for disabled chains
 pub struct ChainManager {
-    running_chains: HashMap<i64, RunningChain>,
+    running_chains: HashMap<u64, RunningChain>,
     historical_sender: mpsc::Sender<IngestMessage>,
     live_sender: mpsc::Sender<IngestMessage>,
     db: Arc<Database>,
@@ -120,7 +120,7 @@ impl ChainManager {
     }
 
     /// Stop a chain indexer gracefully
-    async fn stop_chain(&mut self, chain_id: i64) {
+    async fn stop_chain(&mut self, chain_id: u64) {
         if let Some(running) = self.running_chains.remove(&chain_id) {
             info!("Stopping indexer for chain {} ({})", running.name, chain_id);
 
@@ -156,13 +156,13 @@ impl ChainManager {
         let all_chains = self.db.postgres.get_chains().await?;
 
         // Build sets of what should be running vs what is running
-        let enabled_chain_ids: HashMap<i64, DatabaseChain> = all_chains
+        let enabled_chain_ids: HashMap<u64, DatabaseChain> = all_chains
             .into_iter()
             .filter(|c| c.enabled)
             .map(|c| (c.chain_id, c))
             .collect();
 
-        let running_chain_ids: Vec<i64> = self.running_chains.keys().cloned().collect();
+        let running_chain_ids: Vec<u64> = self.running_chains.keys().cloned().collect();
 
         // Stop chains that are no longer enabled or have changed config
         for chain_id in running_chain_ids {
@@ -254,7 +254,7 @@ impl ChainManager {
 
         // Stop all running chains
         info!("ChainManager: Stopping all chain indexers...");
-        let chain_ids: Vec<i64> = self.running_chains.keys().cloned().collect();
+        let chain_ids: Vec<u64> = self.running_chains.keys().cloned().collect();
         for chain_id in chain_ids {
             self.stop_chain(chain_id).await;
         }

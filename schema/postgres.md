@@ -1,6 +1,6 @@
 # PostgreSQL Schema Documentation
 
-This document describes the PostgreSQL schema for the indexer, converted from the ScyllaDB schema.
+This document describes the PostgreSQL schema for the indexer.
 
 ## Schema Overview
 
@@ -166,15 +166,5 @@ Caches the current price of each chain's native token.
 | price_usd | DOUBLE PRECISION | Current USD price of the native token |
 | updated_at | TIMESTAMPTZ | Timestamp of the last price update |
 
-## Type Mappings
 
-| ScyllaDB Type | PostgreSQL Type |
-|---------------|-----------------|
-| bigint | BIGINT |
-| text | TEXT |
-| boolean | BOOLEAN |
-| double | DOUBLE PRECISION |
-| int | INTEGER |
-| timestamp | TIMESTAMPTZ |
-| list\<text\> | TEXT[] |
 
